@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.seed import seed_demo_data
 from app.db.session import AsyncSessionLocal, engine
+import app.models  # Ensures all 7 models are registered on Base.metadata
 from app.models.user import User
 
 
@@ -69,8 +70,37 @@ app.include_router(workouts.router, prefix=settings.API_V1_STR)
 
 
 # ==============================================================================
-# DEMO SEEDING ENDPOINT (Step 5 Requirement)
+# DATABASE INITIALIZATION & DEMO SEEDING
 # ==============================================================================
+@app.api_route(f"{settings.API_V1_STR}/init-db", methods=["GET", "POST"], tags=["Database Initialization"])
+async def init_database():
+    """
+    Explicitly creates all 7 tables in NeonDB and seeds demo data:
+    - users
+    - daily_vitals
+    - workout_sessions
+    - heart_rate_analytics
+    - sleep_zone_benchmarks
+    - nutrition_logs
+    - meal_entries
+    """
+    import app.models  # noqa: F401
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with AsyncSessionLocal() as session:
+        seed_result = await seed_demo_data(session)
+
+    table_names = list(Base.metadata.tables.keys())
+    return {
+        "status": "success",
+        "message": "All tables created and initialized successfully in NeonDB",
+        "database_type": "PostgreSQL (NeonDB)" if "postgres" in settings.DATABASE_URL else "SQLite (Local)",
+        "tables_created": table_names,
+        "seed_result": seed_result,
+    }
+
+
 @app.post(f"{settings.API_V1_STR}/seed-demo", tags=["Demo & Seeding"])
 @app.get(f"{settings.API_V1_STR}/seed-demo", tags=["Demo & Seeding"])
 async def trigger_seed_demo(db: AsyncSession = Depends(get_db)):
@@ -82,6 +112,8 @@ async def trigger_seed_demo(db: AsyncSession = Depends(get_db)):
     - Heart Rate: 7-bar time-series (Peak: 134 bpm) + Sleep benchmarks
     - Nutrition: 1,840/2,400 kcal, 142g protein, 2.5L water, 4 meals
     """
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     result = await seed_demo_data(db)
     return result
 
