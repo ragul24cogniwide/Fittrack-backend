@@ -1,0 +1,56 @@
+services:
+  # ============================================================================
+  # FastAPI Application Service (Movements+ & FitTrack Backend)
+  # ============================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fittrack-fastapi-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PROJECT_NAME=Movements+ & FitTrack API
+      - API_V1_STR=/api/v1
+      - ENVIRONMENT=production
+      - DEBUG=True
+      # NeonDB Serverless PostgreSQL connection string (or fallback to local db service)
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://neondb_owner:YOUR_NEON_PASSWORD@ep-sweet-mountain-123.us-east-2.aws.neon.tech/neondb?ssl=require}
+      - JWT_SECRET=${JWT_SECRET:-fittrack_super_secure_jwt_secret_key_2026_prod}
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=10080
+      - BACKEND_CORS_ORIGINS=["*"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ============================================================================
+  # Optional Local PostgreSQL Service (Useful for offline dev / testing)
+  # Activated if DATABASE_URL points to postgres://postgres:postgres@db:5432/fittrack
+  # ============================================================================
+  db:
+    image: postgres:16-alpine
+    container_name: fittrack-postgres-db
+    restart: unless-stopped
+    profiles: ["local-db"]  # Only started with `docker compose --profile local-db up`
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=fittrack
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+
