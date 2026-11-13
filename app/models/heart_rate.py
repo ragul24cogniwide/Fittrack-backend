@@ -2,7 +2,7 @@ import uuid
 from datetime import date as date_type
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Uuid
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
@@ -43,6 +43,7 @@ class HeartRateAnalytics(Base):
 class SleepZoneBenchmarks(Base):
     """Sleep & Vitals Benchmark Ranges card at bottom of Screen 5."""
     __tablename__ = "sleep_zone_benchmarks"
+    __table_args__ = (UniqueConstraint("user_id", "recorded_date", name="uq_sleep_benchmarks_user_date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id: Mapped[uuid.UUID] = mapped_column(

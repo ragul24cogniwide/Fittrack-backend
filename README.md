@@ -80,37 +80,41 @@ backend/
 ## 4. Setup & Running
 
 ### 1. Environment Configuration
-Copy `.env.example` to `.env`:
+Copy `.env.example` to `.env` and fill in real values (`.env` is gitignored; never commit secrets):
 ```bash
 cp .env.example .env
 ```
 
-Paste your NeonDB connection string in `.env`:
-```env
-DATABASE_URL="postgresql://neondb_owner:YOUR_PASSWORD@ep-sweet-mountain-a51234.us-east-2.aws.neon.tech/neondb?sslmode=require"
-```
-> **Note:** The backend automatically normalizes `postgresql://` to `postgresql+asyncpg://` and configures SSL and statement caching for Neon serverless poolers.
+| Variable | Required | Notes |
+|---|---|---|
+| `DATABASE_URL` | Yes (hosted) | NeonDB connection string. `postgresql://...?sslmode=require&channel_binding=require` works as copied from Neon. |
+| `JWT_SECRET` | Yes (hosted) | `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | For Google sign-in | Google Cloud Console -> Credentials -> OAuth client ID -> **Web application** |
+| `PUBLIC_BASE_URL` | For Google sign-in | e.g. `https://fittrack-backend-nqkx.onrender.com`. Add `{PUBLIC_BASE_URL}/api/v1/auth/google/callback` as an Authorized redirect URI on the Google client. |
 
-### 2. Install Dependencies
+On Render (detected via `RENDER=true`) or with `ENVIRONMENT=production`, the server **refuses to start** without `DATABASE_URL` and `JWT_SECRET`, instead of silently falling back to a throwaway SQLite file.
+
+### 2. Install & Run
 ```bash
 pip install -r requirements.txt
-```
-
-### 3. Run Development Server
-```bash
 uvicorn app.main:app --reload --port 8000
 ```
+Tables are created automatically on startup (`Base.metadata.create_all`, idempotent). `init_neondb.sql` contains the same schema for manual setup.
 
-### 4. Interactive API Documentation
-- **Swagger UI:** [http://127.0.0.1:8000/api/v1/docs](http://127.0.0.1:8000/api/v1/docs)
-- **ReDoc:** [http://127.0.0.1:8000/api/v1/redoc](http://127.0.0.1:8000/api/v1/redoc)
-- **Health Check:** [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+### 3. Verify
+- **Health:** `GET /health` reports which database is in use, whether it is reachable, and whether Google sign-in is configured.
+- **Docs:** `/api/v1/docs`
+
+### 4. Tests
+```bash
+pytest                                   # throwaway SQLite
+TEST_DATABASE_URL=postgresql://... pytest  # a disposable Postgres database (never your real one)
+```
 
 ---
 
-## 5. Instant Demo Credentials
-The backend seeds a demo user on first boot matching the React Native app:
-- **Email:** `ragul@fittrack.io`
-- **Password:** `password123`
-
-# Fittrack-backend
+## 5. Data Notes
+- New accounts start with empty data; every number on every screen comes from the database.
+- "Today" follows the phone's calendar day via the `X-TZ-Offset-Minutes` header.
+- Steps come from the phone's hardware step counter (`PATCH /vitals/steps` increments).
+- Heart rate is logged manually (watch reading / pulse check) via `POST /vitals/heart-rate-log`.

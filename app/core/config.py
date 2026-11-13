@@ -1,7 +1,13 @@
 import json
+import os
 from typing import List, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# Development-only default; it is public in the repository, so hosted
+# deployments must set their own JWT_SECRET (see guard at the bottom).
+_DEV_JWT_SECRET = "fittrack_local_development_only_secret"
 
 
 class Settings(BaseSettings):
@@ -21,12 +27,30 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///./fittrack_local.db"
 
     # JWT Authentication
-    JWT_SECRET: str = "fittrack_movements_super_secure_jwt_secret_key_2026_dev_prod"
+    JWT_SECRET: str = _DEV_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
 
     # CORS settings
     BACKEND_CORS_ORIGINS: List[str] = ["*"]
+
+    # Google OAuth (Web application client from Google Cloud Console).
+    # The backend runs the OAuth code flow so the mobile app never sees the secret.
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    # Public https URL of this backend, e.g. https://fittrack-backend-nqkx.onrender.com
+    # Used to build the Google redirect URI: {PUBLIC_BASE_URL}{API_V1_STR}/auth/google/callback
+    PUBLIC_BASE_URL: str = ""
+    # Deep link the app listens on after Google sign-in completes
+    APP_DEEP_LINK: str = "fittrack://auth/google"
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.DATABASE_URL.startswith("sqlite")
+
+    @property
+    def google_oauth_enabled(self) -> bool:
+        return bool(self.GOOGLE_CLIENT_ID and self.GOOGLE_CLIENT_SECRET)
 
     @field_validator("DEBUG", mode="before")
     @classmethod
@@ -74,4 +98,19 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+_is_hosted = settings.ENVIRONMENT.lower() == "production" or os.environ.get("RENDER") == "true"
+if _is_hosted and settings.is_sqlite:
+    # Fail loudly: silently falling back to an ephemeral SQLite file on the
+    # server means every redeploy/restart wipes all user accounts.
+    raise RuntimeError(
+        "DATABASE_URL is not set. Set it to your NeonDB connection string "
+        "in the hosting provider's environment variables."
+    )
+if _is_hosted and settings.JWT_SECRET == _DEV_JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET is not set. Generate one with "
+        "`python -c \"import secrets; print(secrets.token_urlsafe(48))\"` "
+        "and add it to the hosting provider's environment variables."
+    )
 

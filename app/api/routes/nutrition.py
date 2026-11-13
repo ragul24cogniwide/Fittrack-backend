@@ -1,12 +1,11 @@
-import uuid
-from datetime import date as date_type
-from datetime import datetime, timezone
+from datetime import date
 from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
+from app.api.daily import client_today, get_or_create_daily
 from app.api.deps import get_current_user, get_db
 from app.models.nutrition import MealEntry, NutritionLog
 from app.models.user import User
@@ -20,69 +19,31 @@ from app.schemas.nutrition import (
 
 router = APIRouter(prefix="/nutrition", tags=["Nutrition & Hydration (Screen 6)"])
 
+PROTEIN_G_PER_KG = 1.6  # common target for active adults
 
-async def _get_or_create_nutrition_log(
-    user_id: uuid.UUID, db: AsyncSession, target_date: Optional[date_type] = None
-) -> NutritionLog:
-    """Helper to retrieve today's NutritionLog or seed default values matching Screen 6."""
-    active_date = target_date or datetime.now(timezone.utc).date()
-    stmt = (
-        select(NutritionLog)
-        .options(selectinload(NutritionLog.meals))
-        .where(
-            NutritionLog.user_id == user_id,
-            NutritionLog.date == active_date,
-        )
+
+def _nutrition_score(nutr: NutritionLog, weight_kg: float) -> int:
+    """
+    0-100 daily score from what was actually logged:
+    calorie adherence to goal, hydration vs goal, and protein vs 1.6 g/kg.
+    """
+    if nutr.calories_consumed == 0 and nutr.water_liters == 0:
+        return 0
+    cal_pct = nutr.calories_consumed * 100 / max(1, nutr.calories_goal)
+    calorie_score = max(0.0, 100 - abs(100 - cal_pct))
+    water_score = min(100.0, nutr.water_liters * 100 / max(0.1, nutr.water_goal_liters))
+    protein_goal = max(1.0, weight_kg * PROTEIN_G_PER_KG)
+    protein_score = min(100.0, nutr.protein_g * 100 / protein_goal)
+    return round((calorie_score + water_score + protein_score) / 3)
+
+
+def _hydration(nutr: NutritionLog) -> HydrationStatusResponse:
+    return HydrationStatusResponse(
+        water_liters=nutr.water_liters,
+        water_goal_liters=nutr.water_goal_liters,
+        water_pct=round(nutr.water_liters * 100 / max(0.1, nutr.water_goal_liters)),
+        metabolic_score_pct=nutr.metabolic_score_pct,
     )
-    res = await db.execute(stmt)
-    nutr = res.scalar_one_or_none()
-
-    if not nutr:
-        nutr = NutritionLog(
-            user_id=user_id,
-            date=active_date,
-            calories_consumed=1840,
-            calories_goal=2400,
-            protein_g=142,
-            carbs_g=210,
-            fats_g=58,
-            water_liters=2.5,
-            water_goal_liters=3.0,
-            metabolic_score_pct=92,
-        )
-        db.add(nutr)
-        await db.commit()
-        await db.refresh(nutr)
-
-        # Seed initial meals matching Screen 6
-        initial_meals = [
-            ("Breakfast", "Oatmeal & Wild Berries", 420, 18),
-            ("Lunch", "Grilled Chicken Quinoa Bowl", 680, 54),
-            ("Snacks", "Greek Yogurt & Roasted Almonds", 240, 22),
-            ("Dinner", "Wild Atlantic Salmon & Sweet Potato", 500, 48),
-        ]
-        for m_type, title, cal, p in initial_meals:
-            meal_item = MealEntry(
-                user_id=user_id,
-                nutrition_log_id=nutr.id,
-                meal_type=m_type,
-                title=title,
-                calories=cal,
-                protein_g=p,
-            )
-            db.add(meal_item)
-        await db.commit()
-
-        # Reload with meals
-        stmt = (
-            select(NutritionLog)
-            .options(selectinload(NutritionLog.meals))
-            .where(NutritionLog.id == nutr.id)
-        )
-        res = await db.execute(stmt)
-        nutr = res.scalar_one()
-
-    return nutr
 
 
 @router.get("/today", response_model=NutritionLogRead)
@@ -91,17 +52,19 @@ async def get_today_nutrition(
     meal_type: Optional[str] = Query(None, description="Filter: Breakfast, Lunch, Dinner, Snacks"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    today: date = Depends(client_today),
 ):
-    """Returns Screen 6 calories, macro progress bars, hydration liters, metabolic score, and meal list."""
-    nutr = await _get_or_create_nutrition_log(current_user.id, db)
+    """Screen 6: calories, macros, hydration, nutrition score and today's meals."""
+    nutr = await get_or_create_daily(db, NutritionLog, current_user, today)
 
-    calories_pct = round((nutr.calories_consumed / max(1, nutr.calories_goal)) * 100)
-    calories_remaining = max(0, nutr.calories_goal - nutr.calories_consumed)
-    water_pct = round((nutr.water_liters / max(0.1, nutr.water_goal_liters)) * 100)
-
-    meals = nutr.meals
+    meal_stmt = (
+        select(MealEntry)
+        .where(MealEntry.nutrition_log_id == nutr.id)
+        .order_by(MealEntry.logged_at.desc())
+    )
     if meal_type and meal_type.lower() != "all meals":
-        meals = [m for m in meals if m.meal_type.lower() == meal_type.lower()]
+        meal_stmt = meal_stmt.where(MealEntry.meal_type == meal_type)
+    meals = (await db.execute(meal_stmt)).scalars().all()
 
     return NutritionLogRead(
         id=nutr.id,
@@ -109,14 +72,14 @@ async def get_today_nutrition(
         date=nutr.date,
         calories_consumed=nutr.calories_consumed,
         calories_goal=nutr.calories_goal,
-        calories_remaining=calories_remaining,
-        calories_pct=calories_pct,
+        calories_remaining=max(0, nutr.calories_goal - nutr.calories_consumed),
+        calories_pct=round(nutr.calories_consumed * 100 / max(1, nutr.calories_goal)),
         protein_g=nutr.protein_g,
         carbs_g=nutr.carbs_g,
         fats_g=nutr.fats_g,
         water_liters=nutr.water_liters,
         water_goal_liters=nutr.water_goal_liters,
-        water_pct=water_pct,
+        water_pct=round(nutr.water_liters * 100 / max(0.1, nutr.water_goal_liters)),
         metabolic_score_pct=nutr.metabolic_score_pct,
         meals=[MealEntryRead.model_validate(m) for m in meals],
     )
@@ -127,37 +90,22 @@ async def increment_hydration(
     payload: Optional[WaterLogRequest] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    today: date = Depends(client_today),
 ):
-    """Increments water_liters by +0.25L and returns updated hydration status."""
-    nutr = await _get_or_create_nutrition_log(current_user.id, db)
+    """Adds water (default +0.25 L) or sets an explicit total for today."""
+    nutr = await get_or_create_daily(db, NutritionLog, current_user, today)
 
-    delta = payload.delta_liters if (payload and payload.delta_liters is not None) else 0.25
     if payload and payload.set_liters is not None:
-        nutr.water_liters = round(max(0.0, min(10.0, payload.set_liters)), 2)
+        new_total = payload.set_liters
     else:
-        nutr.water_liters = round(max(0.0, min(10.0, nutr.water_liters + delta)), 2)
+        delta = payload.delta_liters if (payload and payload.delta_liters is not None) else 0.25
+        new_total = nutr.water_liters + delta
+    nutr.water_liters = round(max(0.0, min(10.0, new_total)), 2)
+    nutr.metabolic_score_pct = _nutrition_score(nutr, current_user.weight_kg)
 
     await db.commit()
     await db.refresh(nutr)
-
-    water_pct = round((nutr.water_liters / max(0.1, nutr.water_goal_liters)) * 100)
-    return HydrationStatusResponse(
-        water_liters=nutr.water_liters,
-        water_goal_liters=nutr.water_goal_liters,
-        water_pct=water_pct,
-        metabolic_score_pct=nutr.metabolic_score_pct,
-    )
-
-
-@router.post("/water", response_model=NutritionLogRead, include_in_schema=False)
-async def log_water_legacy(
-    payload: WaterLogRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Screen 6 interactive 6-pill water logging."""
-    await increment_hydration(payload, current_user, db)
-    return await get_today_nutrition(None, current_user, db)
+    return _hydration(nutr)
 
 
 @router.post("/meals", response_model=MealEntryRead, status_code=status.HTTP_201_CREATED)
@@ -165,23 +113,28 @@ async def log_meal(
     payload: MealEntryCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    today: date = Depends(client_today),
 ):
-    """Logs a new meal and recalculates daily calories and macros."""
-    nutr = await _get_or_create_nutrition_log(current_user.id, db)
+    """Logs a meal and adds it to today's calorie and macro totals."""
+    nutr = await get_or_create_daily(db, NutritionLog, current_user, today)
 
     meal = MealEntry(
         user_id=current_user.id,
         nutrition_log_id=nutr.id,
         meal_type=payload.meal_type,
-        title=payload.title,
+        title=payload.title.strip(),
         calories=payload.calories,
         protein_g=payload.protein_g,
+        carbs_g=payload.carbs_g,
+        fats_g=payload.fats_g,
     )
     db.add(meal)
 
-    # Increment totals
     nutr.calories_consumed += payload.calories
     nutr.protein_g += payload.protein_g
+    nutr.carbs_g += payload.carbs_g
+    nutr.fats_g += payload.fats_g
+    nutr.metabolic_score_pct = _nutrition_score(nutr, current_user.weight_kg)
 
     await db.commit()
     await db.refresh(meal)
@@ -194,24 +147,25 @@ async def delete_meal(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Deletes a meal and deducts its calories/macros from the daily summary."""
-    stmt = select(MealEntry).where(
-        MealEntry.id == meal_id,
-        MealEntry.user_id == current_user.id,
-    )
-    res = await db.execute(stmt)
-    meal = res.scalar_one_or_none()
-
+    """Deletes a meal and subtracts it from that day's totals."""
+    meal = (
+        await db.execute(
+            select(MealEntry).where(MealEntry.id == meal_id, MealEntry.user_id == current_user.id)
+        )
+    ).scalar_one_or_none()
     if not meal:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meal not found")
 
     if meal.nutrition_log_id:
-        nutr_stmt = select(NutritionLog).where(NutritionLog.id == meal.nutrition_log_id)
-        nutr_res = await db.execute(nutr_stmt)
-        nutr = nutr_res.scalar_one_or_none()
+        nutr = (
+            await db.execute(select(NutritionLog).where(NutritionLog.id == meal.nutrition_log_id))
+        ).scalar_one_or_none()
         if nutr:
             nutr.calories_consumed = max(0, nutr.calories_consumed - meal.calories)
             nutr.protein_g = max(0, nutr.protein_g - meal.protein_g)
+            nutr.carbs_g = max(0, nutr.carbs_g - meal.carbs_g)
+            nutr.fats_g = max(0, nutr.fats_g - meal.fats_g)
+            nutr.metabolic_score_pct = _nutrition_score(nutr, current_user.weight_kg)
 
     await db.delete(meal)
     await db.commit()

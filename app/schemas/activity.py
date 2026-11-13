@@ -1,7 +1,7 @@
 import uuid
 from datetime import date as date_type
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -36,15 +36,15 @@ class DailyVitalsUpdate(BaseModel):
 
 class StepsPatchRequest(BaseModel):
     """Payload for PATCH /api/v1/vitals/steps."""
-    steps_increment: Optional[int] = Field(None, description="Steps to add, e.g. +500")
-    steps_count: Optional[int] = Field(None, description="Explicit new steps count")
+    steps_increment: Optional[int] = Field(None, ge=0, le=50000, description="Steps to add, e.g. +500")
+    steps_count: Optional[int] = Field(None, ge=0, le=200000, description="Explicit new steps count")
     agenda_title: Optional[str] = Field(None, description="e.g., 'Walking', 'Evening Stroll'")
 
 
 class WorkoutSessionCreate(BaseModel):
     title: str = Field("Running", description="e.g., 'Running' or 'Skateboard'")
     category: str = Field("Sports", description="'All', 'Meditation', 'Sports', 'Mindfulness'")
-    target_duration_seconds: int = Field(2850, description="Target duration in seconds")
+    target_duration_seconds: int = Field(1800, ge=60, le=6 * 3600, description="Target duration in seconds")
     distance_km: float = Field(0.0, description="Starting distance")
 
 
@@ -55,7 +55,9 @@ class WorkoutTickRequest(BaseModel):
     live_bpm: Optional[int] = Field(None, description="Current live heart rate")
     progress_pct: Optional[int] = Field(None, description="Calculated percentage 0-100")
     calories_burned: Optional[int] = Field(None, description="Estimated calories burned")
-    pace_str: Optional[str] = Field(None, description="Current pace string e.g., 5'12\" /km")
+    pace_str: Optional[str] = Field(None, max_length=50, description="Current pace string e.g., 5'12\" /km")
+    steps_count: Optional[int] = Field(None, ge=0, description="Steps taken during this session")
+    status: Optional[Literal["in_progress", "paused"]] = Field(None, description="Pause or resume")
 
 
 class WorkoutSessionUpdate(BaseModel):
@@ -82,6 +84,7 @@ class WorkoutSessionRead(BaseModel):
     pace_str: str
     avg_hr_bpm: int
     calories_burned: int
+    steps_count: int = 0
     status: str
     created_at: datetime
     updated_at: datetime

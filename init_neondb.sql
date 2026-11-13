@@ -1,8 +1,7 @@
--- Movements+ & FitTrack Database Initialization for NeonDB PostgreSQL
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- FitTrack schema for NeonDB (PostgreSQL). Generated from the SQLAlchemy models.
+-- The backend also creates these automatically on startup; this file is for manual setup.
 
--- Table: users
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
 	id UUID NOT NULL, 
 	full_name VARCHAR(100) NOT NULL, 
 	email VARCHAR(255) NOT NULL, 
@@ -19,9 +18,10 @@ CREATE TABLE users (
 	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	PRIMARY KEY (id)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS ix_users_id ON users (id);
 
--- Table: daily_vitals
-CREATE TABLE daily_vitals (
+CREATE TABLE IF NOT EXISTS daily_vitals (
 	id SERIAL NOT NULL, 
 	user_id UUID NOT NULL, 
 	date DATE NOT NULL, 
@@ -36,11 +36,14 @@ CREATE TABLE daily_vitals (
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
+	CONSTRAINT uq_daily_vitals_user_date UNIQUE (user_id, date), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS ix_daily_vitals_date ON daily_vitals (date);
+CREATE INDEX IF NOT EXISTS ix_daily_vitals_id ON daily_vitals (id);
+CREATE INDEX IF NOT EXISTS ix_daily_vitals_user_id ON daily_vitals (user_id);
 
--- Table: heart_rate_analytics
-CREATE TABLE heart_rate_analytics (
+CREATE TABLE IF NOT EXISTS heart_rate_analytics (
 	id SERIAL NOT NULL, 
 	user_id UUID NOT NULL, 
 	recorded_date DATE NOT NULL, 
@@ -52,9 +55,11 @@ CREATE TABLE heart_rate_analytics (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS ix_heart_rate_analytics_id ON heart_rate_analytics (id);
+CREATE INDEX IF NOT EXISTS ix_heart_rate_analytics_recorded_date ON heart_rate_analytics (recorded_date);
+CREATE INDEX IF NOT EXISTS ix_heart_rate_analytics_user_id ON heart_rate_analytics (user_id);
 
--- Table: nutrition_logs
-CREATE TABLE nutrition_logs (
+CREATE TABLE IF NOT EXISTS nutrition_logs (
 	id SERIAL NOT NULL, 
 	user_id UUID NOT NULL, 
 	date DATE NOT NULL, 
@@ -69,11 +74,14 @@ CREATE TABLE nutrition_logs (
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
+	CONSTRAINT uq_nutrition_logs_user_date UNIQUE (user_id, date), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS ix_nutrition_logs_date ON nutrition_logs (date);
+CREATE INDEX IF NOT EXISTS ix_nutrition_logs_id ON nutrition_logs (id);
+CREATE INDEX IF NOT EXISTS ix_nutrition_logs_user_id ON nutrition_logs (user_id);
 
--- Table: sleep_zone_benchmarks
-CREATE TABLE sleep_zone_benchmarks (
+CREATE TABLE IF NOT EXISTS sleep_zone_benchmarks (
 	id SERIAL NOT NULL, 
 	user_id UUID NOT NULL, 
 	recorded_date DATE NOT NULL, 
@@ -83,11 +91,14 @@ CREATE TABLE sleep_zone_benchmarks (
 	awake_pct VARCHAR(30) NOT NULL, 
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
+	CONSTRAINT uq_sleep_benchmarks_user_date UNIQUE (user_id, recorded_date), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS ix_sleep_zone_benchmarks_id ON sleep_zone_benchmarks (id);
+CREATE INDEX IF NOT EXISTS ix_sleep_zone_benchmarks_recorded_date ON sleep_zone_benchmarks (recorded_date);
+CREATE INDEX IF NOT EXISTS ix_sleep_zone_benchmarks_user_id ON sleep_zone_benchmarks (user_id);
 
--- Table: workout_sessions
-CREATE TABLE workout_sessions (
+CREATE TABLE IF NOT EXISTS workout_sessions (
 	id SERIAL NOT NULL, 
 	user_id UUID NOT NULL, 
 	title VARCHAR(100) NOT NULL, 
@@ -99,15 +110,17 @@ CREATE TABLE workout_sessions (
 	pace_str VARCHAR(50) NOT NULL, 
 	avg_hr_bpm INTEGER NOT NULL, 
 	calories_burned INTEGER NOT NULL, 
+	steps_count INTEGER NOT NULL, 
 	status VARCHAR(20) NOT NULL, 
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
+CREATE INDEX IF NOT EXISTS ix_workout_sessions_id ON workout_sessions (id);
+CREATE INDEX IF NOT EXISTS ix_workout_sessions_user_id ON workout_sessions (user_id);
 
--- Table: meal_entries
-CREATE TABLE meal_entries (
+CREATE TABLE IF NOT EXISTS meal_entries (
 	id SERIAL NOT NULL, 
 	nutrition_log_id INTEGER, 
 	user_id UUID NOT NULL, 
@@ -115,9 +128,13 @@ CREATE TABLE meal_entries (
 	title VARCHAR(150) NOT NULL, 
 	calories INTEGER NOT NULL, 
 	protein_g INTEGER NOT NULL, 
+	carbs_g INTEGER NOT NULL, 
+	fats_g INTEGER NOT NULL, 
 	logged_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(nutrition_log_id) REFERENCES nutrition_logs (id) ON DELETE CASCADE, 
 	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
 );
-
+CREATE INDEX IF NOT EXISTS ix_meal_entries_id ON meal_entries (id);
+CREATE INDEX IF NOT EXISTS ix_meal_entries_nutrition_log_id ON meal_entries (nutrition_log_id);
+CREATE INDEX IF NOT EXISTS ix_meal_entries_user_id ON meal_entries (user_id);

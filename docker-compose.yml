@@ -14,10 +14,13 @@ services:
       - PROJECT_NAME=Movements+ & FitTrack API
       - API_V1_STR=/api/v1
       - ENVIRONMENT=production
-      - DEBUG=True
+      - DEBUG=False
       # NeonDB Serverless PostgreSQL connection string (or fallback to local db service)
-      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://neondb_owner:YOUR_NEON_PASSWORD@ep-sweet-mountain-123.us-east-2.aws.neon.tech/neondb?ssl=require}
-      - JWT_SECRET=${JWT_SECRET:-fittrack_super_secure_jwt_secret_key_2026_prod}
+      - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL to your NeonDB connection string}
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
       - JWT_ALGORITHM=HS256
       - ACCESS_TOKEN_EXPIRE_MINUTES=10080
       - BACKEND_CORS_ORIGINS=["*"]

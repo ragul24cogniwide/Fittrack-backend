@@ -43,9 +43,10 @@ def normalize_neon_database_url(raw_url: str) -> Tuple[str, Dict[str, Any]]:
             or "ssl" in query_params
         )
 
-        # asyncpg does not accept 'sslmode' in query params; strip to prevent crashes
-        query_params.pop("sslmode", None)
-        query_params.pop("ssl", None)
+        # asyncpg does not accept libpq-only params like 'sslmode' or Neon's
+        # 'channel_binding' (connect() raises TypeError); strip them.
+        for libpq_only in ("sslmode", "ssl", "channel_binding", "options", "sslrootcert"):
+            query_params.pop(libpq_only, None)
 
         # Reconstruct clean database URL
         new_query = urlencode(query_params, doseq=True)

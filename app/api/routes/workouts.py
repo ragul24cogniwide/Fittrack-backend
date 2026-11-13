@@ -1,11 +1,10 @@
-from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
-from app.models.activity import DailyVitals, WorkoutSession
+from app.models.activity import WorkoutSession
 from app.models.user import User
 from app.schemas.activity import (
     WorkoutSessionCreate,
@@ -30,9 +29,10 @@ async def get_active_workout(
             WorkoutSession.status.in_(["in_progress", "paused"]),
         )
         .order_by(WorkoutSession.id.desc())
+        .limit(1)
     )
     res = await db.execute(stmt)
-    workout = res.scalar_one_or_none()
+    workout = res.scalars().first()
     if workout:
         return WorkoutSessionRead.model_validate(workout)
     return None
@@ -50,9 +50,9 @@ async def start_or_resume_workout(
         WorkoutSession.user_id == current_user.id,
         WorkoutSession.title == payload.title,
         WorkoutSession.status.in_(["in_progress", "paused"]),
-    )
+    ).order_by(WorkoutSession.id.desc()).limit(1)
     res = await db.execute(stmt)
-    existing_workout = res.scalar_one_or_none()
+    existing_workout = res.scalars().first()
 
     if existing_workout:
         existing_workout.status = "in_progress"
@@ -66,13 +66,13 @@ async def start_or_resume_workout(
         title=payload.title,
         category=payload.category,
         status="in_progress",
-        progress_pct=10,
+        progress_pct=0,
         duration_seconds=0,
         target_duration_seconds=payload.target_duration_seconds,
         distance_km=payload.distance_km,
-        pace_str="5'12\" /km",
+        pace_str="--",
         calories_burned=0,
-        avg_hr_bpm=current_user.target_hr_bpm or 137,
+        avg_hr_bpm=0,
     )
     db.add(workout)
     await db.commit()
@@ -99,8 +99,15 @@ async def update_workout_tick(
     if not workout:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workout not found")
 
+    if workout.status == "completed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Workout already completed")
+
     if payload.duration_seconds is not None:
         workout.duration_seconds = payload.duration_seconds
+        if payload.progress_pct is None:
+            workout.progress_pct = min(
+                100, round(payload.duration_seconds * 100 / max(1, workout.target_duration_seconds))
+            )
     if payload.distance_km is not None:
         workout.distance_km = payload.distance_km
     if payload.live_bpm is not None:
@@ -111,6 +118,10 @@ async def update_workout_tick(
         workout.calories_burned = payload.calories_burned
     if payload.pace_str is not None:
         workout.pace_str = payload.pace_str
+    if payload.steps_count is not None:
+        workout.steps_count = payload.steps_count
+    if payload.status is not None:
+        workout.status = payload.status
 
     await db.commit()
     await db.refresh(workout)
@@ -135,19 +146,9 @@ async def complete_workout(
     if not workout:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workout not found")
 
+    # Steps are already counted into daily vitals by the phone's step sensor,
+    # so completing a workout must not add them a second time.
     workout.status = "completed"
-    workout.progress_pct = 100
-
-    # Sync with today's DailyVitals
-    today = datetime.now(timezone.utc).date()
-    vitals_stmt = select(DailyVitals).where(
-        DailyVitals.user_id == current_user.id,
-        DailyVitals.date == today,
-    )
-    vitals_res = await db.execute(vitals_stmt)
-    vitals = vitals_res.scalar_one_or_none()
-    if vitals:
-        vitals.steps_count += int(workout.distance_km * 1300)
 
     await db.commit()
     await db.refresh(workout)

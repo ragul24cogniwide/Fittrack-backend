@@ -1,11 +1,13 @@
-from datetime import datetime, timezone
+from datetime import date
+
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.daily import client_today, get_or_create_daily, hr_zone_label
 from app.api.deps import get_current_user, get_db
 from app.models.activity import DailyVitals
-from app.models.heart_rate import HeartRateAnalytics, SleepZoneBenchmarks
+from app.models.heart_rate import HeartRateAnalytics
 from app.models.user import User
 from app.schemas.activity import (
     DailyVitalsRead,
@@ -22,38 +24,35 @@ from app.schemas.heart_rate import (
 router = APIRouter(prefix="/vitals", tags=["Vitals & Heart Rate Analytics (Screens 4 & 5)"])
 
 
+async def _weight_status(db: AsyncSession, user: User, vitals: DailyVitals) -> str:
+    """Compares today's weight with the most recent earlier reading."""
+    prev = (
+        await db.execute(
+            select(DailyVitals.weight_kg)
+            .where(DailyVitals.user_id == user.id, DailyVitals.date < vitals.date)
+            .order_by(DailyVitals.date.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if prev is None:
+        return "First Reading"
+    delta = round(vitals.weight_kg - prev, 1)
+    if abs(delta) < 0.2:
+        return "Stable Weight"
+    return f"{'Up' if delta > 0 else 'Down'} {abs(delta)} kg"
+
+
 @router.get("/daily", response_model=DailyVitalsRead)
 async def get_daily_vitals(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    today: date = Depends(client_today),
 ):
-    """Returns Screen 4 ('Daily Activities') Bento payload."""
-    today = datetime.now(timezone.utc).date()
-    stmt = select(DailyVitals).where(
-        DailyVitals.user_id == current_user.id,
-        DailyVitals.date == today,
-    )
-    res = await db.execute(stmt)
-    vitals = res.scalar_one_or_none()
-
-    if not vitals:
-        vitals = DailyVitals(
-            user_id=current_user.id,
-            date=today,
-            agenda_title="Walking",
-            steps_count=7435,
-            weight_kg=current_user.weight_kg or 72.2,
-            weight_status="Stable Weight",
-            latest_hr_bpm=101,
-            hr_status="High HR",
-            body_composition_pct=87.9,
-            body_comp_badge="Gaining Muscle",
-        )
-        db.add(vitals)
-        await db.commit()
-        await db.refresh(vitals)
-
-    return DailyVitalsRead.model_validate(vitals)
+    """Returns Screen 4 ('Daily Activities') payload for the device's current day."""
+    vitals = await get_or_create_daily(db, DailyVitals, current_user, today)
+    result = DailyVitalsRead.model_validate(vitals)
+    result.weight_status = await _weight_status(db, current_user, vitals)
+    return result
 
 
 @router.patch("/steps", response_model=DailyVitalsRead)
@@ -61,25 +60,16 @@ async def patch_daily_steps(
     payload: StepsPatchRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    today: date = Depends(client_today),
 ):
-    """Increments or updates daily steps and agenda (Screen 4)."""
-    today = datetime.now(timezone.utc).date()
-    stmt = select(DailyVitals).where(
-        DailyVitals.user_id == current_user.id,
-        DailyVitals.date == today,
-    )
-    res = await db.execute(stmt)
-    vitals = res.scalar_one_or_none()
-
-    if not vitals:
-        vitals = DailyVitals(user_id=current_user.id, date=today)
-        db.add(vitals)
+    """Adds steps counted by the phone's step sensor (or sets an explicit total)."""
+    vitals = await get_or_create_daily(db, DailyVitals, current_user, today)
 
     if payload.steps_increment is not None:
-        vitals.steps_count += payload.steps_increment
+        # Atomic increment so concurrent syncs never lose steps
+        vitals.steps_count = DailyVitals.steps_count + payload.steps_increment
     elif payload.steps_count is not None:
         vitals.steps_count = payload.steps_count
-
     if payload.agenda_title is not None:
         vitals.agenda_title = payload.agenda_title
 
@@ -88,35 +78,26 @@ async def patch_daily_steps(
     return DailyVitalsRead.model_validate(vitals)
 
 
-@router.put("/daily", response_model=DailyVitalsRead, include_in_schema=False)
+@router.put("/daily", response_model=DailyVitalsRead)
 async def update_daily_vitals(
     payload: DailyVitalsUpdate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    today: date = Depends(client_today),
 ):
-    """Updates daily vitals (weight, steps, body composition)."""
-    today = datetime.now(timezone.utc).date()
-    stmt = select(DailyVitals).where(
-        DailyVitals.user_id == current_user.id,
-        DailyVitals.date == today,
-    )
-    res = await db.execute(stmt)
-    vitals = res.scalar_one_or_none()
+    """Updates today's vitals (e.g. a new weigh-in). Weight also updates the profile."""
+    vitals = await get_or_create_daily(db, DailyVitals, current_user, today)
 
-    if not vitals:
-        vitals = DailyVitals(user_id=current_user.id, date=today)
-        db.add(vitals)
-
-    update_data = payload.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
+    for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(vitals, field, value)
-
     if payload.weight_kg is not None:
         current_user.weight_kg = payload.weight_kg
 
     await db.commit()
     await db.refresh(vitals)
-    return DailyVitalsRead.model_validate(vitals)
+    result = DailyVitalsRead.model_validate(vitals)
+    result.weight_status = await _weight_status(db, current_user, vitals)
+    return result
 
 
 @router.get("/heart-rate-zones", response_model=HeartRateZoneScreenData)
@@ -124,74 +105,49 @@ async def update_daily_vitals(
 async def get_heart_rate_zones(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    today: date = Depends(client_today),
 ):
-    """Returns Screen 5 ('Target Heart Rate Zone') 7-bar time-series + age benchmark ranges."""
-    today = datetime.now(timezone.utc).date()
+    """Screen 5: today's last 7 heart-rate readings plus daily stats."""
+    base = (HeartRateAnalytics.user_id == current_user.id, HeartRateAnalytics.recorded_date == today)
 
-    # Query 7 vertical chart bars
-    hr_stmt = (
-        select(HeartRateAnalytics)
-        .where(HeartRateAnalytics.user_id == current_user.id)
-        .order_by(HeartRateAnalytics.id.asc())
-        .limit(7)
-    )
-    hr_res = await db.execute(hr_stmt)
-    bars = hr_res.scalars().all()
-
-    # Seed 7 canonical slots if empty
-    if not bars or len(bars) < 7:
-        sample_bars = [
-            ("06:00", 102, "Fat Burn", False),
-            ("08:00", 134, "Fat Burn", True),  # Active Peak Bar
-            ("10:00", 115, "Fat Burn", False),
-            ("12:00", 98, "Below zones", False),
-            ("14:00", 122, "Fat Burn", False),
-            ("16:00", 140, "Fat Burn", False),
-            ("18:00", 108, "Below zones", False),
-        ]
-        created_bars = []
-        for slot, bpm, zone, is_peak in sample_bars:
-            log_item = HeartRateAnalytics(
-                user_id=current_user.id,
-                recorded_date=today,
-                slot_label=slot,
-                bpm_value=bpm,
-                zone_type=zone,
-                is_peak=is_peak,
-            )
-            db.add(log_item)
-            created_bars.append(log_item)
-        await db.commit()
-        bars = created_bars
-
-    # Query or create sleep benchmark ranges
-    bench_stmt = select(SleepZoneBenchmarks).where(
-        SleepZoneBenchmarks.user_id == current_user.id,
-        SleepZoneBenchmarks.recorded_date == today,
-    )
-    bench_res = await db.execute(bench_stmt)
-    bench = bench_res.scalar_one_or_none()
-
-    if not bench:
-        bench = SleepZoneBenchmarks(
-            user_id=current_user.id,
-            recorded_date=today,
-            light_pct="40-60%",
-            rem_pct="15-25%",
-            deep_pct="8-16%",
-            awake_pct="12-24%",
+    latest_seven = (
+        await db.execute(
+            select(HeartRateAnalytics).where(*base).order_by(HeartRateAnalytics.id.desc()).limit(7)
         )
-        db.add(bench)
-        await db.commit()
-        await db.refresh(bench)
+    ).scalars().all()
+    bars = list(reversed(latest_seven))  # chronological, left to right
 
+    count, avg_bpm, max_bpm = (
+        await db.execute(
+            select(
+                func.count(HeartRateAnalytics.id),
+                func.coalesce(func.avg(HeartRateAnalytics.bpm_value), 0),
+                func.coalesce(func.max(HeartRateAnalytics.bpm_value), 0),
+            ).where(*base)
+        )
+    ).one()
+
+    target = current_user.target_hr_bpm
+    peak_bpm = max((b.bpm_value for b in bars), default=0)
+    chart = []
+    for b in bars:
+        item = HeartRateAnalyticsRead.model_validate(b)
+        item.is_peak = b.bpm_value == peak_bpm
+        item.zone_type = hr_zone_label(b.bpm_value, target)
+        chart.append(item)
+
+    latest_bpm = bars[-1].bpm_value if bars else 0
     return HeartRateZoneScreenData(
-        target_hr_bpm=current_user.target_hr_bpm or 137,
-        primary_goal=current_user.primary_goal or "Fat Burn",
-        latest_hr_bpm=101,
-        hr_status="High HR",
-        chart_bars=[HeartRateAnalyticsRead.model_validate(b) for b in bars],
-        benchmarks=SleepZoneBenchmarksRead.model_validate(bench),
+        target_hr_bpm=target,
+        primary_goal=current_user.primary_goal,
+        latest_hr_bpm=latest_bpm,
+        hr_status=hr_zone_label(latest_bpm, target),
+        readings_today=int(count),
+        avg_bpm_today=round(float(avg_bpm)),
+        max_bpm_today=int(max_bpm),
+        chart_bars=chart,
+        # Reference sleep-stage ranges for adults (static guidance, not user data)
+        benchmarks=SleepZoneBenchmarksRead(id=0, recorded_date=today),
     )
 
 
@@ -200,18 +156,25 @@ async def create_heart_rate_log(
     payload: HeartRateAnalyticsCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    today: date = Depends(client_today),
 ):
-    """Logs a live heart rate telemetry point."""
-    today = datetime.now(timezone.utc).date()
+    """Logs a heart-rate reading (manual entry or from a workout) and updates today's vitals."""
+    # Resolve today's row first: its create path may commit/rollback the session
+    vitals = await get_or_create_daily(db, DailyVitals, current_user, today)
+
+    zone = hr_zone_label(payload.bpm_value, current_user.target_hr_bpm)
     log = HeartRateAnalytics(
         user_id=current_user.id,
         recorded_date=today,
         slot_label=payload.slot_label,
         bpm_value=payload.bpm_value,
-        zone_type=payload.zone_type,
-        is_peak=payload.is_peak,
+        zone_type=zone,
+        is_peak=False,
     )
     db.add(log)
+    vitals.latest_hr_bpm = payload.bpm_value
+    vitals.hr_status = zone
+
     await db.commit()
     await db.refresh(log)
     return HeartRateAnalyticsRead.model_validate(log)

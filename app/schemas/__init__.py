@@ -9,8 +9,6 @@ from app.schemas.dashboard import (
     DashboardResponse,
     ActivityCardSummary,
     NutrientsSummaryBar,
-    WorkoutProgressWidget,
-    SocialProofWidget,
 )
 from app.schemas.activity import (
     DailyVitalsRead,
@@ -44,8 +42,6 @@ __all__ = [
     "DashboardResponse",
     "ActivityCardSummary",
     "NutrientsSummaryBar",
-    "WorkoutProgressWidget",
-    "SocialProofWidget",
     "DailyVitalsRead",
     "DailyVitalsUpdate",
     "StepsPatchRequest",

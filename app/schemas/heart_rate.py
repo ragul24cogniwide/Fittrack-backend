@@ -19,9 +19,10 @@ class HeartRateAnalyticsRead(BaseModel):
 
 
 class HeartRateAnalyticsCreate(BaseModel):
-    slot_label: str = Field(..., description="7 time slots from Morning to Evening")
-    bpm_value: int = Field(..., ge=44, le=186)
-    zone_type: str = Field("Fat Burn", description="'Below zones' or 'Fat Burn'")
+    slot_label: str = Field(..., max_length=50, description="Device-local time label, e.g. '14:05'")
+    bpm_value: int = Field(..., ge=30, le=230)
+    # Ignored: the zone is computed server-side from the user's target heart rate
+    zone_type: str = Field("", description="Computed by the server")
     is_peak: bool = False
 
 
@@ -40,7 +41,10 @@ class HeartRateZoneScreenData(BaseModel):
     """Aggregated payload matching Screen 5 ('Target Heart Rate Zone')."""
     target_hr_bpm: int = 137
     primary_goal: str = "Fat Burn"
-    latest_hr_bpm: int = 101
-    hr_status: str = "High HR"
+    latest_hr_bpm: int = 0
+    hr_status: str = ""
+    readings_today: int = 0
+    avg_bpm_today: int = 0
+    max_bpm_today: int = 0
     chart_bars: List[HeartRateAnalyticsRead]
     benchmarks: SleepZoneBenchmarksRead

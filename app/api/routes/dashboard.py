@@ -1,9 +1,11 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+
+from fastapi import APIRouter, Depends, Header, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.daily import client_today, get_or_create_daily, week_start
 from app.api.deps import get_current_user, get_db
 from app.models.activity import DailyVitals, WorkoutSession
 from app.models.nutrition import NutritionLog
@@ -16,6 +18,28 @@ from app.schemas.dashboard import (
 
 router = APIRouter(prefix="/dashboard", tags=["Home Dashboard (Screen 3)"])
 
+# WHO guideline: 150 minutes of moderate activity per week
+WEEKLY_GOAL_MINUTES = 150
+# The two activity cards shown on the home screen
+HOME_ACTIVITIES = [("Running", "Sports"), ("Skateboard", "Sports")]
+
+
+def _card_for(title: str, category: str, w: Optional[WorkoutSession]) -> ActivityCardSummary:
+    if w is None:
+        return ActivityCardSummary(title=title, category=category)
+    active = w.status in ("in_progress", "paused")
+    return ActivityCardSummary(
+        id=w.id,
+        title=w.title,
+        category=w.category,
+        status=w.status,
+        progress_pct=w.progress_pct,
+        distance_km=round(w.distance_km, 2),
+        duration_minutes=w.duration_seconds // 60,
+        calories_burned=w.calories_burned,
+        action_label="Continue" if active else "Start",
+    )
+
 
 @router.get("/today", response_model=DashboardResponse)
 @router.get("/overview", response_model=DashboardResponse, include_in_schema=False)
@@ -26,112 +50,75 @@ async def get_today_dashboard(
     ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    today: date = Depends(client_today),
+    x_tz_offset_minutes: Optional[int] = Header(None),
 ):
-    """Returns unified payload for Screen 3 ('Today, Movements+' / 'FitTrack+')."""
-    today = datetime.now(timezone.utc).date()
-
-    # Query nutrition summary for today
-    nutr_stmt = select(NutritionLog).where(
-        NutritionLog.user_id == current_user.id,
-        NutritionLog.date == today,
+    """Returns the live payload for Screen 3 ('Today, FitTrack+')."""
+    # Start of this week (Monday 00:00 on the device) expressed in UTC
+    offset = timedelta(minutes=x_tz_offset_minutes or 0)
+    week_start_utc = (
+        datetime.combine(week_start(today), time.min, tzinfo=timezone.utc) + offset
     )
-    nutr_res = await db.execute(nutr_stmt)
-    nutr = nutr_res.scalar_one_or_none()
 
-    # Query user's workouts
-    workout_stmt = (
-        select(WorkoutSession)
-        .where(WorkoutSession.user_id == current_user.id)
-        .order_by(WorkoutSession.id.desc())
-    )
-    if category and category.lower() != "all":
-        workout_stmt = workout_stmt.where(WorkoutSession.category.ilike(category))
+    community = (await db.execute(select(func.count(User.id)))).scalar_one()
 
-    workout_res = await db.execute(workout_stmt)
-    db_workouts = workout_res.scalars().all()
-
-    if db_workouts:
-        activity_cards = [
-            ActivityCardSummary(
-                id=w.id,
-                title=w.title,
-                category=w.category,
-                progress_pct=w.progress_pct,
-                distance_km=w.distance_km,
-                duration_minutes=max(1, w.duration_seconds // 60),
-                calories_burned=w.calories_burned,
-                action_label="Continue",
+    week_seconds, week_completed = (
+        await db.execute(
+            select(
+                func.coalesce(func.sum(WorkoutSession.duration_seconds), 0),
+                func.count(WorkoutSession.id).filter(WorkoutSession.status == "completed"),
+            ).where(
+                WorkoutSession.user_id == current_user.id,
+                WorkoutSession.created_at >= week_start_utc,
             )
-            for w in db_workouts
-        ]
-    else:
-        # Canonical baseline cards matching reference design
-        raw_cards = [
-            ActivityCardSummary(
-                id=1,
-                title="Running",
-                category="Sports",
-                progress_pct=80,
-                distance_km=5.2,
-                duration_minutes=38,
-                calories_burned=385,
-                action_label="Continue",
-            ),
-            ActivityCardSummary(
-                id=2,
-                title="Skateboard",
-                category="Sports",
-                progress_pct=50,
-                distance_km=2.1,
-                duration_minutes=24,
-                calories_burned=210,
-                action_label="Continue",
-            ),
-        ]
-        if category and category.lower() != "all":
-            activity_cards = [c for c in raw_cards if c.category.lower() == category.lower()]
-        else:
-            activity_cards = raw_cards
-
-    # Nutrients summary banner
-    if nutr:
-        calories_pct = (
-            round((nutr.calories_consumed / nutr.calories_goal) * 100)
-            if nutr.calories_goal > 0
-            else 76
         )
-        nutr_summary = NutrientsSummaryBar(
+    ).one()
+
+    total_calories = (
+        await db.execute(
+            select(func.coalesce(func.sum(WorkoutSession.calories_burned), 0)).where(
+                WorkoutSession.user_id == current_user.id
+            )
+        )
+    ).scalar_one()
+
+    # Latest session per home activity
+    cards = []
+    for title, cat in HOME_ACTIVITIES:
+        if category and category.lower() not in ("all", cat.lower()):
+            continue
+        latest = (
+            await db.execute(
+                select(WorkoutSession)
+                .where(WorkoutSession.user_id == current_user.id, WorkoutSession.title == title)
+                .order_by(WorkoutSession.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        cards.append(_card_for(title, cat, latest))
+
+    vitals = await get_or_create_daily(db, DailyVitals, current_user, today)
+    nutr = await get_or_create_daily(db, NutritionLog, current_user, today)
+
+    week_minutes = int(week_seconds) // 60
+    return DashboardResponse(
+        user_name=current_user.full_name,
+        avatar_url=current_user.avatar_url,
+        community_joined_count=community,
+        workout_minutes_week=week_minutes,
+        workout_goal_minutes_week=WEEKLY_GOAL_MINUTES,
+        workout_progress_hours=f"{week_minutes / 60:.1f}/{WEEKLY_GOAL_MINUTES / 60:g}H",
+        workout_progress_pct=min(100, round(week_minutes * 100 / WEEKLY_GOAL_MINUTES)),
+        workouts_completed_week=int(week_completed),
+        total_calories_burned=int(total_calories),
+        steps_today=vitals.steps_count,
+        activity_cards=cards,
+        nutrients_summary=NutrientsSummaryBar(
             calories_consumed=nutr.calories_consumed,
             calories_goal=nutr.calories_goal,
-            percentage=calories_pct,
+            percentage=round(nutr.calories_consumed * 100 / max(1, nutr.calories_goal)),
             protein_g=nutr.protein_g,
             carbs_g=nutr.carbs_g,
             fats_g=nutr.fats_g,
-        )
-    else:
-        nutr_summary = NutrientsSummaryBar(
-            calories_consumed=1840,
-            calories_goal=2400,
-            percentage=76,
-            protein_g=142,
-            carbs_g=210,
-            fats_g=58,
-        )
-
-    # Format human-readable date string e.g., "Today, Nov 13"
-    date_display = f"Today, {today.strftime('%b %d')}"
-
-    return DashboardResponse(
-        user_greeting="Good Morning",
-        user_name=current_user.full_name or "Jonathan Sanders",
-        avatar_url=current_user.avatar_url,
-        date_str=date_display,
-        community_joined_count=215,
-        workout_progress_hours="10/20H",
-        workout_progress_pct=80,
-        level_label="Level 2 Completed",
-        total_calories_burned=5248,
-        categories=["All", "Meditation", "Sports", "Mindfulness"],
-        activity_cards=activity_cards,
-        nutrients_summary=nutr_summary,
+        ),
     )

@@ -14,18 +14,22 @@ class MealEntryRead(BaseModel):
     title: str
     calories: int
     protein_g: int
+    carbs_g: int = 0
+    fats_g: int = 0
     logged_at: datetime
 
 
 class MealEntryCreate(BaseModel):
     meal_type: str = Field(..., description="'Breakfast', 'Lunch', 'Dinner', 'Snacks'")
     title: str = Field(..., min_length=2, max_length=150)
-    calories: int = Field(..., ge=0)
-    protein_g: int = Field(..., ge=0)
+    calories: int = Field(..., ge=0, le=10000)
+    protein_g: int = Field(0, ge=0, le=1000)
+    carbs_g: int = Field(0, ge=0, le=2000)
+    fats_g: int = Field(0, ge=0, le=1000)
 
 
 class WaterLogRequest(BaseModel):
-    delta_liters: Optional[float] = Field(0.25, description="Increment in liters e.g., +0.25L")
+    delta_liters: Optional[float] = Field(0.25, ge=-3.0, le=3.0, description="Increment in liters e.g., +0.25L")
     set_liters: Optional[float] = Field(None, ge=0.0, le=10.0, description="Direct override e.g., 2.5")
 
 

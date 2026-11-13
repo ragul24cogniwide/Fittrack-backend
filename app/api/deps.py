@@ -69,10 +69,7 @@ async def get_optional_current_user(
 ) -> Optional[User]:
     """Returns the authenticated user or None if no valid credentials provided."""
     if not credentials or not credentials.credentials:
-        # Fallback to demo user if available
-        stmt = select(User).where(User.email == "ragul@fittrack.io")
-        res = await db.execute(stmt)
-        return res.scalar_one_or_none()
+        return None
 
     try:
         return await get_current_user(credentials, db)
