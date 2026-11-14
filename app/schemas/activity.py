@@ -38,7 +38,16 @@ class StepsPatchRequest(BaseModel):
     """Payload for PATCH /api/v1/vitals/steps."""
     steps_increment: Optional[int] = Field(None, ge=0, le=50000, description="Steps to add, e.g. +500")
     steps_count: Optional[int] = Field(None, ge=0, le=200000, description="Explicit new steps count")
+    steps_at_least: Optional[int] = Field(
+        None, ge=0, le=200000,
+        description="The device's total for the day; raises the stored count to at least this",
+    )
     agenda_title: Optional[str] = Field(None, description="e.g., 'Walking', 'Evening Stroll'")
+    for_date: Optional[date_type] = Field(
+        None,
+        description="Device-local day the steps belong to (up to 30 days back). "
+        "Lets the phone backfill days counted while the app was closed.",
+    )
 
 
 class WorkoutSessionCreate(BaseModel):

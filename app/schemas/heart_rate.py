@@ -26,6 +26,21 @@ class HeartRateAnalyticsCreate(BaseModel):
     is_peak: bool = False
 
 
+class HeartRateReadingIn(BaseModel):
+    date: date_type
+    slot_label: str = Field(..., max_length=50, description="Device-local time, e.g. '14:30'")
+    bpm_value: int = Field(..., ge=30, le=230)
+
+
+class HeartRateSyncRequest(BaseModel):
+    readings: List[HeartRateReadingIn] = Field(..., max_length=500)
+
+
+class HeartRateSyncResponse(BaseModel):
+    imported: int
+    skipped: int
+
+
 class SleepZoneBenchmarksRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

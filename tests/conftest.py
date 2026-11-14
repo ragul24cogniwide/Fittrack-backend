@@ -13,3 +13,4 @@ os.environ["DEBUG"] = "false"
 os.environ.pop("RENDER", None)
 os.environ["GOOGLE_CLIENT_ID"] = ""
 os.environ["GOOGLE_CLIENT_SECRET"] = ""
+os.environ["GEMINI_API_KEY"] = ""

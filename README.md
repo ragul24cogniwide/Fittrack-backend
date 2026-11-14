@@ -91,6 +91,8 @@ cp .env.example .env
 | `JWT_SECRET` | Yes (hosted) | `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | For Google sign-in | Google Cloud Console -> Credentials -> OAuth client ID -> **Web application** |
 | `PUBLIC_BASE_URL` | For Google sign-in | e.g. `https://fittrack-backend-nqkx.onrender.com`. Add `{PUBLIC_BASE_URL}/api/v1/auth/google/callback` as an Authorized redirect URI on the Google client. |
+| `GEMINI_API_KEY` | For the AI Coach | Google Gemini API key from aistudio.google.com -> Get API key (free tier available). Without it `/api/v1/ai/chat` answers 503 and everything else works. |
+| `AI_MODEL` | No | Gemini model for the AI Coach, default `gemini-3.5-flash-lite`. |
 
 On Render (detected via `RENDER=true`) or with `ENVIRONMENT=production`, the server **refuses to start** without `DATABASE_URL` and `JWT_SECRET`, instead of silently falling back to a throwaway SQLite file.
 

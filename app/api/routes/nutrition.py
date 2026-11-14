@@ -93,18 +93,11 @@ async def increment_hydration(
     today: date = Depends(client_today),
 ):
     """Adds water (default +0.25 L) or sets an explicit total for today."""
-    nutr = await get_or_create_daily(db, NutritionLog, current_user, today)
-
     if payload and payload.set_liters is not None:
-        new_total = payload.set_liters
+        nutr = await set_water(db, current_user, today, payload.set_liters)
     else:
         delta = payload.delta_liters if (payload and payload.delta_liters is not None) else 0.25
-        new_total = nutr.water_liters + delta
-    nutr.water_liters = round(max(0.0, min(10.0, new_total)), 2)
-    nutr.metabolic_score_pct = _nutrition_score(nutr, current_user.weight_kg)
-
-    await db.commit()
-    await db.refresh(nutr)
+        nutr = await add_water(db, current_user, today, delta)
     return _hydration(nutr)
 
 
@@ -116,28 +109,11 @@ async def log_meal(
     today: date = Depends(client_today),
 ):
     """Logs a meal and adds it to today's calorie and macro totals."""
-    nutr = await get_or_create_daily(db, NutritionLog, current_user, today)
-
-    meal = MealEntry(
-        user_id=current_user.id,
-        nutrition_log_id=nutr.id,
-        meal_type=payload.meal_type,
-        title=payload.title.strip(),
-        calories=payload.calories,
-        protein_g=payload.protein_g,
-        carbs_g=payload.carbs_g,
-        fats_g=payload.fats_g,
+    meal = await add_meal(
+        db, current_user, today,
+        meal_type=payload.meal_type, title=payload.title, calories=payload.calories,
+        protein_g=payload.protein_g, carbs_g=payload.carbs_g, fats_g=payload.fats_g,
     )
-    db.add(meal)
-
-    nutr.calories_consumed += payload.calories
-    nutr.protein_g += payload.protein_g
-    nutr.carbs_g += payload.carbs_g
-    nutr.fats_g += payload.fats_g
-    nutr.metabolic_score_pct = _nutrition_score(nutr, current_user.weight_kg)
-
-    await db.commit()
-    await db.refresh(meal)
     return MealEntryRead.model_validate(meal)
 
 
@@ -148,14 +124,53 @@ async def delete_meal(
     db: AsyncSession = Depends(get_db),
 ):
     """Deletes a meal and subtracts it from that day's totals."""
+    if not await remove_meal(db, current_user, meal_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meal not found")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Shared logic (also used by the AI assistant in routes/ai.py)
+# ---------------------------------------------------------------------------
+
+MEAL_TYPES = ("Breakfast", "Lunch", "Dinner", "Snacks")
+
+
+async def add_meal(
+    db: AsyncSession, user: User, day: date, *, meal_type: str, title: str,
+    calories: int, protein_g: int = 0, carbs_g: int = 0, fats_g: int = 0,
+) -> MealEntry:
+    nutr = await get_or_create_daily(db, NutritionLog, user, day)
+    meal = MealEntry(
+        user_id=user.id,
+        nutrition_log_id=nutr.id,
+        meal_type=meal_type,
+        title=title.strip()[:150],
+        calories=calories,
+        protein_g=protein_g,
+        carbs_g=carbs_g,
+        fats_g=fats_g,
+    )
+    db.add(meal)
+    nutr.calories_consumed += calories
+    nutr.protein_g += protein_g
+    nutr.carbs_g += carbs_g
+    nutr.fats_g += fats_g
+    nutr.metabolic_score_pct = _nutrition_score(nutr, user.weight_kg)
+    await db.commit()
+    await db.refresh(meal)
+    return meal
+
+
+async def remove_meal(db: AsyncSession, user: User, meal_id: int) -> Optional[MealEntry]:
+    """Deletes the user's meal and subtracts it from its day's totals. None if not found."""
     meal = (
         await db.execute(
-            select(MealEntry).where(MealEntry.id == meal_id, MealEntry.user_id == current_user.id)
+            select(MealEntry).where(MealEntry.id == meal_id, MealEntry.user_id == user.id)
         )
     ).scalar_one_or_none()
     if not meal:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meal not found")
-
+        return None
     if meal.nutrition_log_id:
         nutr = (
             await db.execute(select(NutritionLog).where(NutritionLog.id == meal.nutrition_log_id))
@@ -165,8 +180,31 @@ async def delete_meal(
             nutr.protein_g = max(0, nutr.protein_g - meal.protein_g)
             nutr.carbs_g = max(0, nutr.carbs_g - meal.carbs_g)
             nutr.fats_g = max(0, nutr.fats_g - meal.fats_g)
-            nutr.metabolic_score_pct = _nutrition_score(nutr, current_user.weight_kg)
-
+            nutr.metabolic_score_pct = _nutrition_score(nutr, user.weight_kg)
     await db.delete(meal)
     await db.commit()
-    return None
+    return meal
+
+
+async def set_water(db: AsyncSession, user: User, day: date, liters: float) -> NutritionLog:
+    nutr = await get_or_create_daily(db, NutritionLog, user, day)
+    nutr.water_liters = round(max(0.0, min(10.0, liters)), 2)
+    nutr.metabolic_score_pct = _nutrition_score(nutr, user.weight_kg)
+    await db.commit()
+    await db.refresh(nutr)
+    return nutr
+
+
+async def add_water(db: AsyncSession, user: User, day: date, delta_liters: float) -> NutritionLog:
+    nutr = await get_or_create_daily(db, NutritionLog, user, day)
+    return await set_water(db, user, day, nutr.water_liters + delta_liters)
+
+
+async def list_meals(db: AsyncSession, nutr: NutritionLog):
+    return (
+        await db.execute(
+            select(MealEntry)
+            .where(MealEntry.nutrition_log_id == nutr.id)
+            .order_by(MealEntry.logged_at.desc())
+        )
+    ).scalars().all()

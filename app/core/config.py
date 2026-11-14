@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     # Deep link the app listens on after Google sign-in completes
     APP_DEEP_LINK: str = "fittrack://auth/google"
 
+    # AI food & activity logging (Google Gemini API, key from aistudio.google.com).
+    # Without a key the AI chat endpoint answers 503 and the rest of the app works.
+    GEMINI_API_KEY: str = ""
+    AI_MODEL: str = "gemini-3.5-flash-lite"
+
+    @property
+    def ai_enabled(self) -> bool:
+        return bool(self.GEMINI_API_KEY)
+
     @property
     def is_sqlite(self) -> bool:
         return self.DATABASE_URL.startswith("sqlite")

@@ -1,7 +1,7 @@
-from datetime import date
+from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.daily import client_today, get_or_create_daily, hr_zone_label
@@ -14,6 +14,7 @@ from app.schemas.activity import (
     DailyVitalsUpdate,
     StepsPatchRequest,
 )
+from app.schemas.heart_rate import HeartRateSyncRequest, HeartRateSyncResponse
 from app.schemas.heart_rate import (
     HeartRateAnalyticsCreate,
     HeartRateAnalyticsRead,
@@ -22,6 +23,10 @@ from app.schemas.heart_rate import (
 )
 
 router = APIRouter(prefix="/vitals", tags=["Vitals & Heart Rate Analytics (Screens 4 & 5)"])
+
+# How far back the phone may backfill steps / heart rate (e.g. app not opened
+# for a few days while the step service kept counting)
+BACKFILL_DAYS = 30
 
 
 async def _weight_status(db: AsyncSession, user: User, vitals: DailyVitals) -> str:
@@ -62,10 +67,27 @@ async def patch_daily_steps(
     db: AsyncSession = Depends(get_db),
     today: date = Depends(client_today),
 ):
-    """Adds steps counted by the phone's step sensor (or sets an explicit total)."""
-    vitals = await get_or_create_daily(db, DailyVitals, current_user, today)
+    """
+    Records steps for today (or a recent day via for_date).
+    steps_at_least: the phone's own total for that day; only ever raises the
+    stored count, so resending it is safe and two sources never double count.
+    """
+    day = today
+    if payload.for_date is not None:
+        if not (today - timedelta(days=BACKFILL_DAYS) <= payload.for_date <= today):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Steps can only be recorded for the last {BACKFILL_DAYS} days",
+            )
+        day = payload.for_date
+    vitals = await get_or_create_daily(db, DailyVitals, current_user, day)
 
-    if payload.steps_increment is not None:
+    if payload.steps_at_least is not None:
+        floor = payload.steps_at_least
+        vitals.steps_count = case(
+            (DailyVitals.steps_count < floor, floor), else_=DailyVitals.steps_count
+        )
+    elif payload.steps_increment is not None:
         # Atomic increment so concurrent syncs never lose steps
         vitals.steps_count = DailyVitals.steps_count + payload.steps_increment
     elif payload.steps_count is not None:
@@ -86,15 +108,9 @@ async def update_daily_vitals(
     today: date = Depends(client_today),
 ):
     """Updates today's vitals (e.g. a new weigh-in). Weight also updates the profile."""
-    vitals = await get_or_create_daily(db, DailyVitals, current_user, today)
-
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(vitals, field, value)
-    if payload.weight_kg is not None:
-        current_user.weight_kg = payload.weight_kg
-
-    await db.commit()
-    await db.refresh(vitals)
+    vitals = await save_daily_vitals(
+        db, current_user, today, **payload.model_dump(exclude_unset=True)
+    )
     result = DailyVitalsRead.model_validate(vitals)
     result.weight_status = await _weight_status(db, current_user, vitals)
     return result
@@ -178,3 +194,74 @@ async def create_heart_rate_log(
     await db.commit()
     await db.refresh(log)
     return HeartRateAnalyticsRead.model_validate(log)
+
+
+@router.post("/heart-rate-sync", response_model=HeartRateSyncResponse)
+async def sync_heart_rate(
+    payload: HeartRateSyncRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    today: date = Depends(client_today),
+):
+    """
+    Imports heart-rate readings from Health Connect (watch / fitness apps).
+    Readings already stored (same day, time and bpm) are skipped, so the app
+    can safely resend after a failed sync.
+    """
+    oldest = today - timedelta(days=BACKFILL_DAYS)
+    readings = [r for r in payload.readings if oldest <= r.date <= today]
+    if not readings:
+        return HeartRateSyncResponse(imported=0, skipped=len(payload.readings))
+
+    existing = set(
+        (await db.execute(
+            select(HeartRateAnalytics.recorded_date, HeartRateAnalytics.slot_label, HeartRateAnalytics.bpm_value)
+            .where(
+                HeartRateAnalytics.user_id == current_user.id,
+                HeartRateAnalytics.recorded_date.in_({r.date for r in readings}),
+            )
+        )).all()
+    )
+
+    imported = 0
+    latest_today = None
+    for r in sorted(readings, key=lambda r: (r.date, r.slot_label)):
+        key = (r.date, r.slot_label, r.bpm_value)
+        if key in existing:
+            continue
+        existing.add(key)
+        db.add(HeartRateAnalytics(
+            user_id=current_user.id,
+            recorded_date=r.date,
+            slot_label=r.slot_label,
+            bpm_value=r.bpm_value,
+            zone_type=hr_zone_label(r.bpm_value, current_user.target_hr_bpm),
+            is_peak=False,
+        ))
+        imported += 1
+        if r.date == today:
+            latest_today = r.bpm_value
+
+    if latest_today is not None:
+        vitals = await get_or_create_daily(db, DailyVitals, current_user, today)
+        vitals.latest_hr_bpm = latest_today
+        vitals.hr_status = hr_zone_label(latest_today, current_user.target_hr_bpm)
+
+    await db.commit()
+    return HeartRateSyncResponse(imported=imported, skipped=len(payload.readings) - imported)
+
+
+# ---------------------------------------------------------------------------
+# Shared logic (also used by the AI assistant)
+# ---------------------------------------------------------------------------
+
+async def save_daily_vitals(db: AsyncSession, user: User, day: date, **fields) -> DailyVitals:
+    """Updates a day's vitals; a weight also becomes the profile weight."""
+    vitals = await get_or_create_daily(db, DailyVitals, user, day)
+    for field, value in fields.items():
+        setattr(vitals, field, value)
+    if fields.get("weight_kg") is not None:
+        user.weight_kg = fields["weight_kg"]
+    await db.commit()
+    await db.refresh(vitals)
+    return vitals
