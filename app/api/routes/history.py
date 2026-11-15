@@ -11,11 +11,13 @@ from app.api.deps import get_current_user, get_db
 from app.models.activity import DailyVitals, WorkoutSession
 from app.models.heart_rate import HeartRateAnalytics
 from app.models.nutrition import MealEntry, NutritionLog
+from app.models.sleep import SleepSession
 from app.models.user import User
 from app.schemas.activity import WorkoutSessionRead
 from app.schemas.heart_rate import HeartRateAnalyticsRead
 from app.schemas.history import DayDetail, DayHistory, HistorySummary, HistoryTotals
 from app.schemas.nutrition import MealEntryRead
+from app.api.routes.sleep import _read as sleep_read
 
 router = APIRouter(prefix="/history", tags=["History"])
 
@@ -109,6 +111,15 @@ async def _build_days(
         days[rec_date].hr_readings = int(count)
         days[rec_date].avg_hr_bpm = round(float(avg))
 
+    for night in (
+        await db.execute(
+            select(SleepSession).where(
+                SleepSession.user_id == user.id, SleepSession.date.between(start, end)
+            )
+        )
+    ).scalars():
+        days[night.date].sleep_minutes = night.asleep_min
+
     return days
 
 
@@ -128,6 +139,7 @@ async def get_history_summary(
     total_steps = sum(r.steps_count for r in rows)
     best = max(rows, key=lambda r: r.steps_count)
     meal_days = [r for r in rows if r.calories_consumed > 0]
+    sleep_days = [r for r in rows if r.sleep_minutes > 0]
     totals = HistoryTotals(
         steps=total_steps,
         avg_steps_per_day=round(total_steps / len(rows)),
@@ -141,6 +153,10 @@ async def get_history_summary(
         avg_calories_consumed=(
             round(sum(r.calories_consumed for r in meal_days) / len(meal_days)) if meal_days else 0
         ),
+        avg_sleep_minutes=(
+            round(sum(r.sleep_minutes for r in sleep_days) / len(sleep_days)) if sleep_days else 0
+        ),
+        nights_logged=len(sleep_days),
     )
     return HistorySummary(
         start_date=start, end_date=today, step_goal=STEP_GOAL, days=rows, totals=totals
@@ -155,7 +171,7 @@ async def get_day_detail(
     today: date = Depends(client_today),
     x_tz_offset_minutes: Optional[int] = Header(None),
 ):
-    """Everything recorded on one day: meals, workouts and heart-rate readings."""
+    """Everything recorded on one day: sleep, meals, workouts and heart-rate readings."""
     if day > today:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Date is in the future")
     offset = _offset(x_tz_offset_minutes)
@@ -194,8 +210,15 @@ async def get_day_detail(
         )
     ).scalars().all()
 
+    night = (
+        await db.execute(
+            select(SleepSession).where(SleepSession.user_id == current_user.id, SleepSession.date == day)
+        )
+    ).scalar_one_or_none()
+
     return DayDetail(
         summary=summary,
+        sleep=sleep_read(night) if night else None,
         meals=[MealEntryRead.model_validate(m) for m in meals],
         workouts=[WorkoutSessionRead.model_validate(w) for w in workouts],
         heart_rate=[HeartRateAnalyticsRead.model_validate(r) for r in readings],

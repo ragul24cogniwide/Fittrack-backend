@@ -3,6 +3,7 @@ from app.models.user import User
 from app.models.activity import DailyVitals, WorkoutSession
 from app.models.heart_rate import HeartRateAnalytics, SleepZoneBenchmarks
 from app.models.nutrition import NutritionLog, MealEntry
+from app.models.sleep import SleepSession
 
 __all__ = [
     "Base",
@@ -13,4 +14,5 @@ __all__ = [
     "SleepZoneBenchmarks",
     "NutritionLog",
     "MealEntry",
+    "SleepSession",
 ]

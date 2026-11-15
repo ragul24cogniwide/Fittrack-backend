@@ -138,3 +138,28 @@ CREATE TABLE IF NOT EXISTS meal_entries (
 CREATE INDEX IF NOT EXISTS ix_meal_entries_id ON meal_entries (id);
 CREATE INDEX IF NOT EXISTS ix_meal_entries_nutrition_log_id ON meal_entries (nutrition_log_id);
 CREATE INDEX IF NOT EXISTS ix_meal_entries_user_id ON meal_entries (user_id);
+
+-- Sleep tracking (one night per user per wake-up day)
+CREATE TABLE IF NOT EXISTS sleep_sessions (
+	id SERIAL NOT NULL, 
+	user_id UUID NOT NULL, 
+	date DATE NOT NULL, 
+	start_local TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	end_local TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	asleep_min INTEGER NOT NULL, 
+	awake_min INTEGER, 
+	light_min INTEGER, 
+	deep_min INTEGER, 
+	rem_min INTEGER, 
+	source VARCHAR(20) NOT NULL, 
+	rating INTEGER, 
+	confirmed BOOLEAN NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_sleep_sessions_user_date UNIQUE (user_id, date), 
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_sleep_sessions_date ON sleep_sessions (date);
+CREATE INDEX IF NOT EXISTS ix_sleep_sessions_id ON sleep_sessions (id);
+CREATE INDEX IF NOT EXISTS ix_sleep_sessions_user_id ON sleep_sessions (user_id);

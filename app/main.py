@@ -5,7 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
-from app.api.routes import ai, auth, dashboard, history, nutrition, vitals, workouts
+from app.api.routes import ai, auth, dashboard, history, nutrition, sleep, vitals, workouts
 from app.core.config import _is_hosted, settings
 from app.db.base import Base
 from app.db.seed import seed_demo_data
@@ -53,6 +53,7 @@ app.include_router(nutrition.router, prefix=settings.API_V1_STR)
 app.include_router(workouts.router, prefix=settings.API_V1_STR)
 app.include_router(history.router, prefix=settings.API_V1_STR)
 app.include_router(ai.router, prefix=settings.API_V1_STR)
+app.include_router(sleep.router, prefix=settings.API_V1_STR)
 
 
 # ==============================================================================
@@ -100,5 +101,5 @@ async def health_check():
         "google_sign_in_configured": settings.google_oauth_enabled,
         "ai_assistant_configured": settings.ai_enabled,
         "cors_origins": ["*"],
-        "version": "1.2.0",
+        "version": "1.3.0",
     }

@@ -4,12 +4,13 @@ AI assistant: the user types what they ate / drank / weighed in plain words
 same helpers the Nutrients and Daily Activities screens use.
 """
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, List, Literal, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.daily import client_today, get_or_create_daily
@@ -22,7 +23,9 @@ from app.api.routes.nutrition import (
     list_meals,
     remove_meal,
 )
+from app.api.routes.sleep import save_sleep
 from app.api.routes.vitals import save_daily_vitals
+from app.models.sleep import SleepSession
 from app.core.config import settings
 from app.models.nutrition import NutritionLog
 from app.models.user import User
@@ -50,6 +53,7 @@ How to log:
 - meal_type: use the one the user says. Otherwise pick from their local time: before 11:00 Breakfast, 11:00-16:00 Lunch, 16:00-18:30 Snacks, after 18:30 Dinner; small items between meals are Snacks.
 - Plain water: call log_water with the amount in liters (a glass is about 0.25 L). Tea, coffee, juice and milk are logged with log_meal, not as water.
 - A body weight ("I weigh 72 kg", "weight 158 lb"): call log_weight in kilograms.
+- Sleep ("slept from 11 to 6:30", "went to bed at 1am, woke at 8, felt tired"): call log_sleep with 24-hour HH:MM times. Add a rating 1-5 only if they say how rested they feel (1 = exhausted, 5 = fully rested).
 - Corrections ("remove the toast", "that was 3 eggs, not 2"): use the meal ids from today's context; delete the wrong entry and log the corrected one.
 - Questions ("how much protein today?", "what should I eat for dinner?"): answer from today's context without logging anything.
 - If a message is too vague to estimate (e.g. "I ate something"), ask one short question instead of guessing.
@@ -59,14 +63,14 @@ After logging, reply in one or two short sentences: what you logged with its cal
 _INT = {"type": "integer"}
 
 
-def _fn(name: str, description: str, properties: dict) -> types.FunctionDeclaration:
+def _fn(name: str, description: str, properties: dict, optional: tuple = ()) -> types.FunctionDeclaration:
     return types.FunctionDeclaration(
         name=name,
         description=description,
         parameters_json_schema={
             "type": "object",
             "properties": properties,
-            "required": list(properties),
+            "required": [k for k in properties if k not in optional],
         },
     )
 
@@ -95,6 +99,16 @@ FUNCTIONS: List[types.FunctionDeclaration] = [
         {"liters": {"type": "number"}},
     ),
     _fn(
+        "log_sleep",
+        "Records last night's sleep (the night that ended this morning, or the most recent one).",
+        {
+            "bedtime": {"type": "string", "description": "When they fell asleep, 24-hour HH:MM, e.g. '23:30'"},
+            "wake_time": {"type": "string", "description": "When they woke up, 24-hour HH:MM, e.g. '06:45'"},
+            "rating": {"type": "integer", "description": "How rested, 1 (exhausted) to 5 (fully rested)"},
+        },
+        optional=("rating",),
+    ),
+    _fn(
         "log_weight",
         "Records today's body weight in kilograms (convert from pounds if needed).",
         {"weight_kg": {"type": "number"}},
@@ -112,7 +126,7 @@ class ChatRequest(BaseModel):
 
 
 class ChatAction(BaseModel):
-    kind: Literal["meal_added", "meal_removed", "water", "weight"]
+    kind: Literal["meal_added", "meal_removed", "water", "weight", "sleep"]
     label: str
     meal_id: Optional[int] = None
     meal_type: Optional[str] = None
@@ -139,6 +153,14 @@ def get_ai_client() -> genai.Client:
     return _client
 
 
+def _parse_clock(value) -> time:
+    try:
+        hours, minutes = str(value).strip().split(":")[:2]
+        return time(int(hours) % 24, int(minutes))
+    except (ValueError, TypeError):
+        raise ValueError("Times must be 24-hour HH:MM, e.g. 23:30")
+
+
 def _local_now(offset_minutes: Optional[int]) -> datetime:
     now = datetime.now(timezone.utc)
     if offset_minutes is not None and -840 <= offset_minutes <= 840:
@@ -162,11 +184,22 @@ async def _today_context(db: AsyncSession, user: User, today: date, local_now: d
             lines.append(f"  {m.id}: {m.meal_type} - {m.title} - {m.calories} kcal / {m.protein_g} g")
     else:
         lines.append("Nothing logged yet today.")
+    night = (
+        await db.execute(select(SleepSession).where(SleepSession.user_id == user.id, SleepSession.date == today))
+    ).scalar_one_or_none()
+    if night:
+        lines.append(
+            f"Last night's sleep: {night.start_local:%H:%M}-{night.end_local:%H:%M}, "
+            f"{night.asleep_min // 60} h {night.asleep_min % 60} min asleep (source: {night.source})."
+        )
+    else:
+        lines.append("Last night's sleep: not recorded yet.")
     return "\n".join(lines)
 
 
 async def _run_tool(
-    name: str, args: dict, db: AsyncSession, user: User, today: date, actions: List[ChatAction]
+    name: str, args: dict, db: AsyncSession, user: User, today: date, actions: List[ChatAction],
+    local_now: Optional[datetime] = None,
 ) -> str:
     """Executes one function call; returns the text result for the model. Raises ValueError on bad input."""
     if name == "log_meal":
@@ -204,6 +237,23 @@ async def _run_tool(
         actions.append(ChatAction(kind="water", label=f"{liters:+g} L water", amount=liters))
         return f"Water today is now {nutr.water_liters:g} L."
 
+    if name == "log_sleep":
+        bed = _parse_clock(args.get("bedtime"))
+        wake = _parse_clock(args.get("wake_time"))
+        now = (local_now or datetime.combine(today, time(12, 0))).replace(tzinfo=None)
+        # The night that ended most recently: woke today, unless that's still in the future
+        wake_day = today if datetime.combine(today, wake) <= now + timedelta(minutes=30) else today - timedelta(days=1)
+        end = datetime.combine(wake_day, wake)
+        start = datetime.combine(wake_day if bed < wake else wake_day - timedelta(days=1), bed)
+        rating = args.get("rating")
+        rating = int(rating) if rating is not None else None
+        if rating is not None and not 1 <= rating <= 5:
+            raise ValueError("rating must be between 1 and 5")
+        night = await save_sleep(db, user, today, start, end, "manual", rating=rating)
+        label = f"Slept {night.start_local:%H:%M}-{night.end_local:%H:%M} ({night.asleep_min // 60} h {night.asleep_min % 60} min)"
+        actions.append(ChatAction(kind="sleep", label=label, amount=round(night.asleep_min / 60, 1)))
+        return f"{label} saved for the night ending {night.date:%d %b}."
+
     if name == "log_weight":
         kg = round(float(args.get("weight_kg", 0)), 1)
         if not 25 <= kg <= 400:
@@ -233,7 +283,8 @@ async def chat(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The last message must be from the user")
 
     # Today's numbers (and meal ids for corrections) go in the system instruction
-    context = await _today_context(db, current_user, today, _local_now(x_tz_offset_minutes))
+    local_now = _local_now(x_tz_offset_minutes)
+    context = await _today_context(db, current_user, today, local_now)
     turns = [m for m in payload.messages]
     while turns and turns[0].role != "user":
         turns.pop(0)
@@ -274,7 +325,7 @@ async def chat(
             for call in calls:
                 try:
                     result = {"result": await _run_tool(
-                        call.name, dict(call.args or {}), db, current_user, today, actions
+                        call.name, dict(call.args or {}), db, current_user, today, actions, local_now
                     )}
                 except (ValueError, TypeError) as exc:
                     result = {"error": str(exc)}

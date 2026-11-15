@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from app.schemas.activity import WorkoutSessionRead
 from app.schemas.heart_rate import HeartRateAnalyticsRead
 from app.schemas.nutrition import MealEntryRead
+from app.schemas.sleep import SleepSessionRead
 
 
 class DayHistory(BaseModel):
@@ -22,6 +23,7 @@ class DayHistory(BaseModel):
     workout_calories: int = 0
     hr_readings: int = 0
     avg_hr_bpm: int = 0
+    sleep_minutes: int = 0  # asleep the night before (woke up on this day)
 
 
 class HistoryTotals(BaseModel):
@@ -35,6 +37,8 @@ class HistoryTotals(BaseModel):
     workout_minutes: int
     workout_calories: int
     avg_calories_consumed: int  # averaged over days that have meals logged
+    avg_sleep_minutes: int = 0  # averaged over nights that were recorded
+    nights_logged: int = 0
 
 
 class HistorySummary(BaseModel):
@@ -47,6 +51,7 @@ class HistorySummary(BaseModel):
 
 class DayDetail(BaseModel):
     summary: DayHistory
+    sleep: Optional[SleepSessionRead] = None
     meals: List[MealEntryRead]
     workouts: List[WorkoutSessionRead]
     heart_rate: List[HeartRateAnalyticsRead]

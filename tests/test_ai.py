@@ -229,3 +229,23 @@ async def test_ai_unreachable_returns_retryable_error(client, fake_gemini):
                             json={"messages": [{"role": "user", "content": "1 apple"}]})
     assert res.status_code == 502
     assert "try again" in res.json()["detail"]
+
+
+async def test_ai_logs_sleep(client, fake_gemini):
+    headers = await _register(client)
+    fake = fake_gemini([
+        [_tool("t1", "log_sleep", bedtime="23:30", wake_time="06:45", rating=2)],
+        [_text("Logged 7 h 15 min of sleep.")],
+    ])
+    res = await client.post("/api/v1/ai/chat", headers=headers, json={"messages": [
+        {"role": "user", "content": "slept 11:30 to 6:45, still tired"}]})
+    assert res.status_code == 200, res.text
+    assert res.json()["actions"], fake.requests[1]["contents"][-1].parts[0].function_response.response
+    action = res.json()["actions"][0]
+    assert action["kind"] == "sleep" and action["label"] == "Slept 23:30-06:45 (7 h 15 min)"
+    assert "Last night's sleep: not recorded yet." in fake.requests[0]["config"].system_instruction
+
+    summary = (await client.get("/api/v1/sleep/summary?days=2", headers=headers)).json()
+    logged = [n for n in summary["nights"] if n["asleep_min"]]
+    assert len(logged) == 1 and logged[0]["asleep_min"] == 435
+    assert logged[0]["bedtime"] == "23:30" and logged[0]["wake_time"] == "06:45"
