@@ -38,6 +38,38 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
+GOOGLE_PEOPLE_URL = "https://people.googleapis.com/v1/people/me"
+GOOGLE_GENDER_SCOPE = "https://www.googleapis.com/auth/user.gender.read"
+
+
+def _http() -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=15)
+
+
+async def _google_gender(access_token: Optional[str]) -> Optional[str]:
+    """
+    'male' / 'female' from the Google account (People API), or None when the
+    user didn't share it, never set it, or chose another value. Never fails
+    the sign-in: the app asks for it instead.
+    """
+    if not access_token:
+        return None
+    try:
+        async with _http() as client:
+            res = await client.get(
+                GOOGLE_PEOPLE_URL,
+                params={"personFields": "genders"},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    except httpx.HTTPError:
+        return None
+    if res.status_code != 200:
+        return None
+    for g in res.json().get("genders", []):
+        value = str(g.get("value", "")).lower()
+        if value in ("male", "female"):
+            return value
+    return None
 
 
 def _token_response(user: User) -> TokenResponse:
@@ -93,7 +125,11 @@ async def login(payload: UserLogin, db: AsyncSession = Depends(get_db)):
 # GOOGLE SIGN-IN
 # ==============================================================================
 async def _upsert_google_user(
-    db: AsyncSession, email: str, full_name: Optional[str], avatar_url: Optional[str]
+    db: AsyncSession,
+    email: str,
+    full_name: Optional[str],
+    avatar_url: Optional[str],
+    gender: Optional[str] = None,
 ) -> User:
     email_clean = email.lower().strip()
     user = (await db.execute(select(User).where(User.email == email_clean))).scalar_one_or_none()
@@ -105,6 +141,7 @@ async def _upsert_google_user(
             hashed_password=get_password_hash(secrets.token_urlsafe(32)),
             full_name=(full_name or email_clean.split("@")[0])[:100],
             avatar_url=avatar_url,
+            gender=gender,
             is_active=True,
             is_onboarded=False,
         )
@@ -114,6 +151,9 @@ async def _upsert_google_user(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated")
         if avatar_url and not user.avatar_url:
             user.avatar_url = avatar_url
+        # Fill in from Google only if the user hasn't chosen one in the app
+        if gender and not user.gender:
+            user.gender = gender
     await db.commit()
     await db.refresh(user)
     return user
@@ -164,7 +204,8 @@ async def google_start(request: Request, app_state: str = ""):
             "client_id": settings.GOOGLE_CLIENT_ID,
             "redirect_uri": _google_redirect_uri(request),
             "response_type": "code",
-            "scope": "openid email profile",
+            "scope": "openid email profile"
+            + (f" {GOOGLE_GENDER_SCOPE}" if settings.GOOGLE_REQUEST_GENDER else ""),
             "prompt": "select_account",
             "state": state,
         }
@@ -188,7 +229,7 @@ async def google_callback(
     if error or not code:
         return _deep_link_page({"error": error or "missing_code", "app_state": app_state})
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _http() as client:
         token_res = await client.post(
             GOOGLE_TOKEN_URL,
             data={
@@ -213,8 +254,13 @@ async def google_callback(
     ):
         return _deep_link_page({"error": "unverified_google_account", "app_state": app_state})
 
+    gender = (
+        await _google_gender(token_res.json().get("access_token"))
+        if settings.GOOGLE_REQUEST_GENDER
+        else None
+    )
     user = await _upsert_google_user(
-        db, id_claims["email"], id_claims.get("name"), id_claims.get("picture")
+        db, id_claims["email"], id_claims.get("name"), id_claims.get("picture"), gender
     )
     return _deep_link_page(
         {"token": create_access_token(subject=str(user.id)), "app_state": app_state}
@@ -232,7 +278,7 @@ async def google_login(payload: UserGoogleLogin, db: AsyncSession = Depends(get_
     if not payload.id_token:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "id_token is required")
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with _http() as client:
         info_res = await client.get(GOOGLE_TOKENINFO_URL, params={"id_token": payload.id_token})
     info = info_res.json() if info_res.status_code == 200 else {}
     if (

@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # The backend runs the OAuth code flow so the mobile app never sees the secret.
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
+    # Also ask Google for the account's gender (People API, "user.gender.read").
+    # It's a sensitive scope: Google shows an "unverified app" notice until the
+    # OAuth consent screen is verified. Set to false to stop asking.
+    GOOGLE_REQUEST_GENDER: bool = True
     # Public https URL of this backend, e.g. https://fittrack-backend-nqkx.onrender.com
     # Used to build the Google redirect URI: {PUBLIC_BASE_URL}{API_V1_STR}/auth/google/callback
     PUBLIC_BASE_URL: str = ""
