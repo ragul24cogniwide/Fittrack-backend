@@ -1,7 +1,10 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+
+Gender = Literal["male", "female", "other"]
 
 
 class UserLogin(BaseModel):
@@ -14,6 +17,7 @@ class UserRegister(BaseModel):
     password: str = Field(..., min_length=6)
     full_name: str = Field("Jonathan Sanders", max_length=100)
     avatar_url: Optional[str] = None
+    gender: Optional[Gender] = None
 
 
 class UserGoogleLogin(BaseModel):
@@ -38,6 +42,13 @@ class UserOnboardingUpdate(BaseModel):
         None,
         description="Auto-calculated if omitted: round((220 - age) * 0.70)",
     )
+    gender: Optional[Gender] = Field(None, description="Left unchanged if omitted")
+
+
+class UserProfileUpdate(BaseModel):
+    """Profile fields that can be changed any time (only the ones sent change)."""
+    full_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    gender: Optional[Gender] = None
 
 
 class UserRead(BaseModel):
@@ -56,6 +67,7 @@ class UserRead(BaseModel):
     height_cm: float
     primary_goal: str
     target_hr_bpm: int
+    gender: Optional[str] = None
 
     created_at: datetime
 

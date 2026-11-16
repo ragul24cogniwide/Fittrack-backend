@@ -163,3 +163,37 @@ CREATE TABLE IF NOT EXISTS sleep_sessions (
 CREATE INDEX IF NOT EXISTS ix_sleep_sessions_date ON sleep_sessions (date);
 CREATE INDEX IF NOT EXISTS ix_sleep_sessions_id ON sleep_sessions (id);
 CREATE INDEX IF NOT EXISTS ix_sleep_sessions_user_id ON sleep_sessions (user_id);
+
+-- Profile gender (picks the private tracker)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS gender VARCHAR(10);
+
+-- Private log (men)
+CREATE TABLE IF NOT EXISTS masturbation_logs (
+	id SERIAL NOT NULL, 
+	user_id UUID NOT NULL, 
+	date DATE NOT NULL, 
+	logged_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_masturbation_logs_date ON masturbation_logs (date);
+CREATE INDEX IF NOT EXISTS ix_masturbation_logs_id ON masturbation_logs (id);
+CREATE INDEX IF NOT EXISTS ix_masturbation_logs_user_id ON masturbation_logs (user_id);
+
+-- Period tracker (women)
+CREATE TABLE IF NOT EXISTS period_logs (
+	id SERIAL NOT NULL, 
+	user_id UUID NOT NULL, 
+	start_date DATE NOT NULL, 
+	end_date DATE, 
+	flow VARCHAR(10), 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_period_logs_user_start UNIQUE (user_id, start_date), 
+	FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_period_logs_id ON period_logs (id);
+CREATE INDEX IF NOT EXISTS ix_period_logs_start_date ON period_logs (start_date);
+CREATE INDEX IF NOT EXISTS ix_period_logs_user_id ON period_logs (user_id);

@@ -4,6 +4,7 @@ from app.models.activity import DailyVitals, WorkoutSession
 from app.models.heart_rate import HeartRateAnalytics, SleepZoneBenchmarks
 from app.models.nutrition import NutritionLog, MealEntry
 from app.models.sleep import SleepSession
+from app.models.wellness import MasturbationLog, PeriodLog
 
 __all__ = [
     "Base",
@@ -15,4 +16,6 @@ __all__ = [
     "NutritionLog",
     "MealEntry",
     "SleepSession",
+    "MasturbationLog",
+    "PeriodLog",
 ]

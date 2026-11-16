@@ -37,6 +37,8 @@ class User(Base):
     )
     # Auto-calculated: round((220 - age) * 0.70) => round((220 - 24) * 0.7) = 137
     target_hr_bpm: Mapped[int] = mapped_column(Integer, default=137)
+    # "male", "female" or "other"; picks the private tracker (private log / period tracker)
+    gender: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_onboarded: Mapped[bool] = mapped_column(Boolean, default=False)

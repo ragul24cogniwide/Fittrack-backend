@@ -27,6 +27,16 @@ def client_today(
     return now.date()
 
 
+def client_now(
+    x_tz_offset_minutes: Optional[int] = Header(None),
+) -> datetime:
+    """FastAPI dependency: the device's local wall-clock time (naive; UTC fallback)."""
+    now = datetime.now(timezone.utc)
+    if x_tz_offset_minutes is not None and -840 <= x_tz_offset_minutes <= 840:
+        now = now - timedelta(minutes=x_tz_offset_minutes)
+    return now.replace(tzinfo=None, microsecond=0)
+
+
 async def get_or_create_daily(
     db: AsyncSession, model: Type[T], user: User, day: date
 ) -> T:

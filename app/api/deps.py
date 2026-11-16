@@ -75,3 +75,18 @@ async def get_optional_current_user(
         return await get_current_user(credentials, db)
     except HTTPException:
         return None
+
+
+def require_gender(gender: str):
+    """Dependency factory: the private trackers are per gender (set in the profile)."""
+    label = {"male": "Male", "female": "Female"}.get(gender, gender)
+
+    async def dependency(current_user: User = Depends(get_current_user)) -> User:
+        if current_user.gender != gender:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"This tracker is for profiles set to {label}.",
+            )
+        return current_user
+
+    return dependency

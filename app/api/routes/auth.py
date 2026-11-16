@@ -27,6 +27,7 @@ from app.schemas.auth import (
     UserGoogleLogin,
     UserLogin,
     UserOnboardingUpdate,
+    UserProfileUpdate,
     UserRead,
     UserRegister,
 )
@@ -60,6 +61,7 @@ async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
         hashed_password=get_password_hash(payload.password),
         full_name=payload.full_name.strip() or "Athlete",
         avatar_url=payload.avatar_url,
+        gender=payload.gender,
         is_active=True,
         is_onboarded=False,
     )
@@ -267,6 +269,8 @@ async def update_onboarding_biometrics(
     current_user.primary_goal = payload.primary_goal
     # Formula: target_hr_bpm = round((220 - age) * 0.70)
     current_user.target_hr_bpm = payload.target_hr_bpm or round((220 - payload.age) * 0.70)
+    if payload.gender is not None:
+        current_user.gender = payload.gender
     current_user.is_onboarded = True
 
     # Keep today's weight reading in sync if the day's row already exists
@@ -280,6 +284,22 @@ async def update_onboarding_biometrics(
     if vitals:
         vitals.weight_kg = payload.weight_kg
 
+    await db.commit()
+    await db.refresh(current_user)
+    return UserRead.model_validate(current_user)
+
+
+@router.patch("/profile", response_model=UserRead)
+async def update_profile(
+    payload: UserProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Changes name and/or gender (Google accounts pick their gender here)."""
+    if payload.full_name is not None:
+        current_user.full_name = payload.full_name.strip() or current_user.full_name
+    if payload.gender is not None:
+        current_user.gender = payload.gender
     await db.commit()
     await db.refresh(current_user)
     return UserRead.model_validate(current_user)

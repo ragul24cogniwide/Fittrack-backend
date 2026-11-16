@@ -5,9 +5,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
-from app.api.routes import ai, auth, dashboard, history, nutrition, sleep, vitals, workouts
+from app.api.routes import (
+    ai, auth, cycle, dashboard, history, masturbation, nutrition, sleep, vitals, workouts,
+)
 from app.core.config import _is_hosted, settings
 from app.db.base import Base
+from app.db.migrate import add_missing_columns
 from app.db.seed import seed_demo_data
 from app.db.session import AsyncSessionLocal, engine
 import app.models  # Ensures all 7 models are registered on Base.metadata
@@ -18,6 +21,7 @@ async def lifespan(app: FastAPI):
     """Creates any missing tables in NeonDB on startup (idempotent)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(add_missing_columns)
     yield
     await engine.dispose()
 
@@ -54,6 +58,8 @@ app.include_router(workouts.router, prefix=settings.API_V1_STR)
 app.include_router(history.router, prefix=settings.API_V1_STR)
 app.include_router(ai.router, prefix=settings.API_V1_STR)
 app.include_router(sleep.router, prefix=settings.API_V1_STR)
+app.include_router(masturbation.router, prefix=settings.API_V1_STR)
+app.include_router(cycle.router, prefix=settings.API_V1_STR)
 
 
 # ==============================================================================
@@ -68,6 +74,7 @@ async def init_database():
     """Creates any missing tables (safe to call repeatedly; never deletes data)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(add_missing_columns)
     return {
         "status": "success",
         "database_type": _db_kind(),
@@ -101,5 +108,5 @@ async def health_check():
         "google_sign_in_configured": settings.google_oauth_enabled,
         "ai_assistant_configured": settings.ai_enabled,
         "cors_origins": ["*"],
-        "version": "1.3.0",
+        "version": "1.4.0",
     }
