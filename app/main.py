@@ -1,4 +1,9 @@
+import asyncio
+import logging
+import os
 from contextlib import asynccontextmanager
+
+import httpx
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -16,13 +21,41 @@ from app.db.session import AsyncSessionLocal, engine
 import app.models  # Ensures all 7 models are registered on Base.metadata
 
 
+log = logging.getLogger("fittrack.keepalive")
+
+
+def keep_alive_url() -> str:
+    """Public /ping URL of this server when hosted (Render sets RENDER_EXTERNAL_URL), else ''."""
+    if not _is_hosted or settings.KEEP_ALIVE_SECONDS <= 0:
+        return ""
+    base = (settings.PUBLIC_BASE_URL or os.environ.get("RENDER_EXTERNAL_URL", "")).rstrip("/")
+    return f"{base}/ping" if base else ""
+
+
+async def keep_alive(url: str, every: int) -> None:
+    """Requests our own public URL so Render sees traffic and doesn't put the service to sleep."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        while True:
+            await asyncio.sleep(every)
+            try:
+                await client.get(url)
+            except Exception as err:  # a missed ping is harmless; try again next round
+                log.warning("keep-alive ping failed: %s", err)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Creates any missing tables in NeonDB on startup (idempotent)."""
+    """Creates any missing tables in NeonDB on startup (idempotent) and starts the keep-alive ping."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(add_missing_columns)
+    url = keep_alive_url()
+    task = asyncio.create_task(keep_alive(url, settings.KEEP_ALIVE_SECONDS)) if url else None
+    if task:
+        log.info("keep-alive: pinging %s every %ss", url, settings.KEEP_ALIVE_SECONDS)
     yield
+    if task:
+        task.cancel()
     await engine.dispose()
 
 
@@ -89,6 +122,12 @@ if not _is_hosted:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         return await seed_demo_data(db)
+
+
+@app.get("/ping", tags=["Health"])
+async def ping():
+    """Lightweight check for keep-alive pings and uptime monitors (no database query)."""
+    return {"ok": True}
 
 
 @app.get("/health", tags=["Health"])

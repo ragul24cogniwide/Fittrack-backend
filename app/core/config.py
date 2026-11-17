@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # Public https URL of this backend, e.g. https://fittrack-backend-nqkx.onrender.com
     # Used to build the Google redirect URI: {PUBLIC_BASE_URL}{API_V1_STR}/auth/google/callback
     PUBLIC_BASE_URL: str = ""
+    # Render's free plan sleeps after ~15 min without requests. While hosted, the server pings its own
+    # public /ping every KEEP_ALIVE_SECONDS so it stays awake (0 = off). /ping doesn't touch the database,
+    # so NeonDB can still pause when nobody uses the app.
+    KEEP_ALIVE_SECONDS: int = 30
     # Deep link the app listens on after Google sign-in completes
     APP_DEEP_LINK: str = "fittrack://auth/google"
 

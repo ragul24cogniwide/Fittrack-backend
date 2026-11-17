@@ -249,3 +249,17 @@ async def test_users_cannot_see_each_others_data(client):
     )
     assert (await client.delete(f"/api/v1/nutrition/meals/{meal.json()['id']}", headers=h2)).status_code == 404
     assert (await client.get("/api/v1/nutrition/today", headers=h2)).json()["meals"] == []
+
+
+async def test_ping_is_light_and_keep_alive_only_when_hosted(client, monkeypatch):
+    res = await client.get("/ping")
+    assert res.status_code == 200 and res.json() == {"ok": True}
+    import app.main as main
+    monkeypatch.setattr(main, "_is_hosted", False)
+    assert main.keep_alive_url() == ""
+    monkeypatch.setattr(main, "_is_hosted", True)
+    monkeypatch.setattr(main.settings, "PUBLIC_BASE_URL", "")
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://example.onrender.com/")
+    assert main.keep_alive_url() == "https://example.onrender.com/ping"
+    monkeypatch.setattr(main.settings, "KEEP_ALIVE_SECONDS", 0)
+    assert main.keep_alive_url() == ""
